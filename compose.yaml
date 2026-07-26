@@ -13,6 +13,14 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    labels:
+      logging: "alloy"
+      service: "postgres"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
 
   backend:
@@ -28,7 +36,15 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "18000:8000"
+      - "127.0.0.1:18000:8000"
+    labels:
+      logging: "alloy"
+      service: "backend"
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
     restart: unless-stopped
 
   frontend:
@@ -39,7 +55,105 @@ services:
       - backend
     ports:
       - "18080:80"
+    labels:
+      logging: "alloy"
+      service: "frontend"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.12.0
+    container_name: biology-chat-prometheus
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=7d", "--storage.tsdb.retention.size=2GB", "--web.enable-lifecycle"]
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - biology_prometheus_data:/prometheus
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:19090:9090"
+    mem_limit: 512m
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.7.4
+    container_name: biology-chat-loki
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - ./observability/loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - biology_loki_data:/loki
+    mem_limit: 512m
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.18.0
+    container_name: biology-chat-alloy
+    command: ["run", "--server.http.listen-addr=0.0.0.0:12345", "/etc/alloy/config.alloy"]
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - biology_alloy_data:/var/lib/alloy/data
+    depends_on:
+      - loki
+    ports:
+      - "127.0.0.1:12345:12345"
+    mem_limit: 256m
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.1.1
+    container_name: biology-chat-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SERVER_ROOT_URL: http://localhost:13000
+      LANGSMITH_ORG_ID: ${LANGSMITH_ORG_ID:-}
+      LANGSMITH_PROJECT_ID: ${LANGSMITH_PROJECT_ID:-}
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - biology_grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+    ports:
+      - "127.0.0.1:13000:3000"
+    mem_limit: 256m
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:v1.12.1
+    container_name: biology-chat-node-exporter
+    command: ["--path.rootfs=/host", "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"]
+    volumes:
+      - /:/host:ro,rslave
+    profiles: ["host-monitoring"]
+    restart: unless-stopped
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.60.5
+    container_name: biology-chat-cadvisor
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+    profiles: ["host-monitoring"]
     restart: unless-stopped
 
 volumes:
   biology_postgres_data:
+  biology_prometheus_data:
+  biology_loki_data:
+  biology_alloy_data:
+  biology_grafana_data:

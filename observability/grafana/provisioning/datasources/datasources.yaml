@@ -1,0 +1,27 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      manageAlerts: true
+      prometheusType: Prometheus
+      prometheusVersion: 3.12.0
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      derivedFields:
+        - name: LangSmith trace
+          matcherRegex: '"langsmith_trace_id":"([^"]+)"'
+          url: "https://smith.langchain.com/o/$LANGSMITH_ORG_ID/projects/p/$LANGSMITH_PROJECT_ID/r/$${__value.raw}?poll=true"

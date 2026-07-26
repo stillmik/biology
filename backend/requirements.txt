@@ -1,6 +1,8 @@
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
 langgraph==0.6.7
+langsmith==0.10.10
 openai==1.99.9
+prometheus-client==0.26.0
 python-dotenv==1.1.1
 psycopg[binary]==3.2.9

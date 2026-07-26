@@ -126,13 +126,23 @@ async function editStoredMessage(message, content) {
     status.textContent = "Thinking...";
     editor.disabled = true;
     actions.remove();
-    const response = await fetch(`/api/messages/${message.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: user.id, content: nextContent }) });
-    if (response.ok) {
+    try {
+      editor.replaceWith(content);
+      content.textContent = nextContent;
+      let assistantBubble = null;
+      let reply = "";
+      const response = await fetch(`/api/messages/${message.id}/stream`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: user.id, content: nextContent }) });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.detail || "Could not regenerate the message.");
+      }
+      await readTokenStream(response, (token) => { reply += token; if (!assistantBubble) assistantBubble = addMessage("", "assistant"); renderAssistantText(assistantBubble, reply); messages.scrollTop = messages.scrollHeight; });
       await selectConversation(activeConversation);
-    } else {
+      status.textContent = "";
+    } catch (error) {
       await selectConversation(activeConversation);
+      status.textContent = error.message;
     }
-    status.textContent = "";
   };
   save.addEventListener("click", () => finish(true));
   cancel.addEventListener("click", () => finish(false));
@@ -259,6 +269,28 @@ async function selectConversation(conversation) {
   renderConversations(conversations);
 }
 
+async function readTokenStream(response, onToken) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop();
+    for (const event of events) {
+      const line = event.split("\n").find((part) => part.startsWith("data: "));
+      if (!line) continue;
+      const payload = line.slice(6);
+      if (payload === "[DONE]") continue;
+      const data = JSON.parse(payload);
+      if (data.error) throw new Error(data.error);
+      if (data.token) onToken(data.token);
+    }
+  }
+}
+
 document.querySelector("#new-chat").addEventListener("click", () => createConversation().catch((error) => { status.textContent = error.message; }));
 
 form.addEventListener("submit", async (event) => {
@@ -272,31 +304,8 @@ form.addEventListener("submit", async (event) => {
     const response = await fetch("/api/chat/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: user.id, conversation_id: activeConversation.id, message }) });
     if (!response.ok) throw new Error("The backend returned an error.");
     let assistantBubble = null;
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
     let reply = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const events = buffer.split("\n\n");
-      buffer = events.pop();
-      for (const event of events) {
-        const line = event.split("\n").find((part) => part.startsWith("data: "));
-        if (!line) continue;
-        const payload = line.slice(6);
-        if (payload === "[DONE]") continue;
-        const data = JSON.parse(payload);
-        if (data.error) throw new Error(data.error);
-        reply += data.token || "";
-        if (!assistantBubble) assistantBubble = addMessage("", "assistant");
-        renderAssistantText(assistantBubble, reply);
-        messages.scrollTop = messages.scrollHeight;
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-      }
-    }
-    await selectConversation(activeConversation);
+    await readTokenStream(response, (token) => { reply += token; if (!assistantBubble) assistantBubble = addMessage("", "assistant"); renderAssistantText(assistantBubble, reply); messages.scrollTop = messages.scrollHeight; });
     await selectConversation(activeConversation);
   } catch (error) {
     addMessage(error.message, "assistant");

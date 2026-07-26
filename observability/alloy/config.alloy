@@ -1,0 +1,49 @@
+discovery.docker "biology_containers" {
+  host = "unix:///var/run/docker.sock"
+  refresh_interval = "5s"
+}
+
+discovery.relabel "biology_logs" {
+  targets = discovery.docker.biology_containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_logging"]
+    regex = "alloy"
+    action = "keep"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex = "/(.*)"
+    target_label = "container"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_service"]
+    target_label = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_compose_project"]
+    target_label = "compose_project"
+  }
+}
+
+loki.source.docker "biology_logs" {
+  host = "unix:///var/run/docker.sock"
+  targets = discovery.relabel.biology_logs.output
+  forward_to = [loki.process.biology_logs.receiver]
+  refresh_interval = "5s"
+}
+
+loki.process "biology_logs" {
+  stage.docker {}
+
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

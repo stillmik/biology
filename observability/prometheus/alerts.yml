@@ -1,0 +1,127 @@
+groups:
+  - name: biology-chat-availability
+    rules:
+      - alert: BiologyBackendDown
+        expr: up{job="backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Biology Chat backend is unavailable
+          description: Prometheus has not scraped the backend successfully for two minutes.
+
+      - alert: BiologyElevatedHttpErrors
+        expr: sum(rate(biology_http_requests_total{status_group="5xx"}[5m])) / clamp_min(sum(rate(biology_http_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Elevated Biology Chat error rate
+          description: More than five percent of backend requests have returned 5xx responses for five minutes.
+
+      - alert: BiologyDatabaseFailures
+        expr: increase(biology_database_operations_total{result="error"}[10m]) + increase(biology_database_connection_failures_total[10m]) > 3
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Repeated PostgreSQL failures
+          description: The backend has observed repeated database operation or connection failures.
+
+  - name: biology-chat-langgraph
+    rules:
+      - alert: BiologySummarizationFailures
+        expr: increase(biology_summaries_total{result="error"}[15m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Conversation summarization failed
+          description: At least one rolling-summary operation failed in the last fifteen minutes.
+
+      - alert: BiologyContextBudgetExceeded
+        expr: increase(biology_context_budget_warnings_total[15m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Conversation context exceeded its budget
+          description: At least one conversation could not be compressed below the configured context limit.
+
+      - alert: BiologyLangGraphNodeFailures
+        expr: increase(biology_langgraph_node_executions_total{result="error"}[10m]) > 2
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Repeated LangGraph node failures
+          description: More than two graph-node failures occurred in ten minutes.
+
+  - name: biology-chat-model
+    rules:
+      - alert: BiologyModelFailures
+        expr: increase(biology_model_requests_total{result="error"}[10m]) > 2
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Repeated xAI model failures
+          description: More than two xAI model calls failed in ten minutes.
+
+      - alert: BiologySlowFirstToken
+        expr: histogram_quantile(0.95, sum by (le) (rate(biology_model_first_token_seconds_bucket[10m]))) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Slow streaming first-token latency
+          description: The p95 first-token latency has exceeded ten seconds.
+
+      - alert: BiologyBrokenStreaming
+        expr: increase(biology_streams_total{result=~"error|disconnected"}[15m]) > 3
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Repeated stream failures or disconnects
+          description: More than three streams failed or disconnected in fifteen minutes.
+
+  - name: biology-chat-langsmith
+    rules:
+      - alert: BiologyLangSmithFreeTierWarning
+        expr: sum(increase(biology_langsmith_traces_attempted_total[30d])) > 4000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: LangSmith trace usage is approaching the free allowance
+          description: The backend attempted more than four thousand LangSmith root traces during the last thirty days.
+
+      - alert: BiologyLangSmithFreeTierCritical
+        expr: sum(increase(biology_langsmith_traces_attempted_total[30d])) > 4500
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: LangSmith trace usage is close to the free allowance
+          description: Reduce LANGSMITH_TRACING_SAMPLING_RATE if traffic will continue at the current rate.
+
+  - name: biology-chat-host
+    rules:
+      - alert: BiologyHostDiskLow
+        expr: node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"} < 0.10
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Host disk space is low
+          description: A monitored host filesystem has less than ten percent free space.
+
+      - alert: BiologyContainerMemoryHigh
+        expr: container_memory_working_set_bytes{name=~"biology-chat-.+"} / container_spec_memory_limit_bytes{name=~"biology-chat-.+"} > 0.90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Biology Chat container memory is high
+          description: A Biology Chat container has used more than ninety percent of its configured memory limit.
