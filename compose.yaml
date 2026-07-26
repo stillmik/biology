@@ -1,0 +1,45 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: biology-chat-db
+    environment:
+      POSTGRES_DB: biology_chat
+      POSTGRES_USER: biology
+      POSTGRES_PASSWORD: biology
+    volumes:
+      - biology_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U biology -d biology_chat"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    container_name: biology-chat-backend
+    environment:
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: postgresql://biology:biology@db:5432/biology_chat
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "18000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: biology-chat-frontend
+    depends_on:
+      - backend
+    ports:
+      - "18080:80"
+    restart: unless-stopped
+
+volumes:
+  biology_postgres_data:
