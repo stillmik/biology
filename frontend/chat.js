@@ -271,8 +271,7 @@ form.addEventListener("submit", async (event) => {
   try {
     const response = await fetch("/api/chat/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: user.id, conversation_id: activeConversation.id, message }) });
     if (!response.ok) throw new Error("The backend returned an error.");
-    const assistant = addMessage("", "assistant");
-    const assistantBubble = assistant;
+    let assistantBubble = null;
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -291,8 +290,10 @@ form.addEventListener("submit", async (event) => {
         const data = JSON.parse(payload);
         if (data.error) throw new Error(data.error);
         reply += data.token || "";
+        if (!assistantBubble) assistantBubble = addMessage("", "assistant");
         renderAssistantText(assistantBubble, reply);
         messages.scrollTop = messages.scrollHeight;
+        await new Promise((resolve) => requestAnimationFrame(resolve));
       }
     }
     await selectConversation(activeConversation);

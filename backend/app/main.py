@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from typing import TypedDict
 
 from dotenv import load_dotenv
@@ -227,8 +228,10 @@ def stream_chat(request: ChatRequest) -> StreamingResponse:
         chunks = []
         for event in stream:
             if getattr(event, "type", "") == "response.output_text.delta":
-                chunks.append(event.delta)
-                yield f"data: {json.dumps({'token': event.delta})}\n\n"
+                for character in event.delta:
+                    chunks.append(character)
+                    yield f"data: {json.dumps({'token': character})}\n\n"
+                    time.sleep(0.01)
         reply = "".join(chunks)
         add_message(request.user_id, request.conversation_id, "assistant", reply)
         yield "data: [DONE]\n\n"
