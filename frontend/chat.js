@@ -105,12 +105,18 @@ async function deleteConversation(conversation) {
 async function renameConversation(conversation) {
   const row = document.querySelector(`[data-conversation-id="${conversation.id}"]`);
   const button = row.querySelector(".conversation");
+  const rename = row.querySelector(".conversation-rename");
   const input = document.createElement("input");
   input.className = "conversation-input";
   input.value = conversation.title;
   button.replaceWith(input);
   input.focus();
   input.select();
+  const submit = document.createElement("button");
+  submit.className = "conversation-submit";
+  submit.textContent = "✓";
+  submit.title = "Save conversation name";
+  rename.replaceWith(submit);
   let finished = false;
   const finish = async (save) => {
     if (finished) return;
@@ -118,17 +124,20 @@ async function renameConversation(conversation) {
     const title = input.value.trim();
     if (!save || !title) {
       input.replaceWith(button);
+      submit.replaceWith(rename);
       return;
     }
     const response = await fetch(`/api/conversations/${conversation.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: user.id, title }) });
     if (!response.ok) {
       input.replaceWith(button);
+      submit.replaceWith(rename);
       return;
     }
     const updated = await response.json();
     conversation.title = updated.title;
     button.textContent = updated.title;
     input.replaceWith(button);
+    submit.replaceWith(rename);
     if (activeConversation?.id === conversation.id) document.querySelector("#chat-title").textContent = updated.title;
   };
   input.addEventListener("keydown", (event) => {
@@ -136,6 +145,7 @@ async function renameConversation(conversation) {
     if (event.key === "Escape") finish(false);
   });
   input.addEventListener("blur", () => finish(true));
+  submit.addEventListener("click", () => finish(true));
 }
 
 function renderConversations(conversations) {

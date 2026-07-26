@@ -21,6 +21,8 @@ body { min-height: 100vh; background: #212121; }
 .conversation:hover, .conversation-row.active .conversation { color: #f1f1f1; background: transparent; }
 .conversation-rename, .conversation-delete { width: 30px; padding: 0; color: #a8a8a8; background: transparent; font-size: 1rem; }
 .conversation-rename:hover { color: #f1f1f1; background: transparent; }
+.conversation-submit { width: 30px; padding: 0; color: #a8cfa8; background: transparent; font-size: 1.2rem; }
+.conversation-submit:hover { color: #fff; background: transparent; }
 .conversation-delete:hover { color: #ef7777; background: transparent; }
 .switch-user { margin-top: auto; color: #a8a8a8; padding: 8px; font-size: .9rem; }
 .auth-shell { width: min(440px, 100%); background: #2b2b2b; border: 1px solid #3f3f3f; border-radius: 18px; padding: 32px; box-shadow: 0 20px 60px #00000055; }
