@@ -45,6 +45,17 @@ h1 { margin: 8px 0; font-size: clamp(2rem, 5vw, 3.4rem); }
 .message-group:hover .message-actions { opacity: 1; }
 .message-actions button { width: 34px; height: 34px; padding: 0; color: #d0d0d0; background: transparent; border-radius: 9px; font-size: 1.35rem; font-weight: 400; }
 .message-actions button:hover { color: #fff; background: #343434; }
+.message table { border-collapse: collapse; margin: 8px 0; width: 100%; font-size: .95em; }
+.message th, .message td { border: 1px solid #606060; padding: 7px 10px; text-align: left; }
+.message th { background: #454545; font-weight: 700; }
+.message h1, .message h2, .message h3, .message h4, .message h5, .message h6 { margin: 10px 0 6px; line-height: 1.25; }
+.message h1 { font-size: 1.5em; }
+.message h2 { font-size: 1.3em; }
+.message h3 { font-size: 1.15em; }
+.message ul { margin: 6px 0; padding-left: 24px; }
+.message li { margin: 4px 0; }
+.message code { padding: 2px 5px; background: #242424; border-radius: 4px; font-family: Consolas, monospace; }
+.message a { color: #9ecbff; }
 .message-editor { display: inline-block; width: auto; max-width: 100%; min-width: 1ch; overflow: hidden; color: #f1f1f1; background: transparent; border: 0; outline: none; font: inherit; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message-actions .message-save, .message-actions .message-cancel { width: auto; height: auto; padding: 6px 10px; font-size: .8rem; background: #4b4b4b; }
 .message-thinking { opacity: 1; color: #a8a8a8; font-size: .85rem; padding: 6px 4px; }

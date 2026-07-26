@@ -18,6 +18,57 @@ function addMessage(text, role) {
   group.appendChild(element);
   messages.appendChild(group);
   messages.scrollTop = messages.scrollHeight;
+  return element;
+}
+
+function escapeHtml(text) {
+  return text.replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", "\"": "&quot;" })[character]);
+}
+
+function renderAssistantText(element, text) {
+  const lines = text.split("\n");
+  const output = [];
+  let index = 0;
+  let listItems = [];
+  const flushList = () => {
+    if (!listItems.length) return;
+    output.push(`<ul>${listItems.join("")}</ul>`);
+    listItems = [];
+  };
+  const inline = (value) => escapeHtml(value).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "<em>$1</em>").replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  while (index < lines.length) {
+    if (lines[index].trim().startsWith("|") && index + 1 < lines.length && /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(lines[index + 1])) {
+      const headers = lines[index].split("|").slice(1, -1).map((cell) => `<th>${inline(cell.trim())}</th>`).join("");
+      index += 2;
+      const rows = [];
+      while (index < lines.length && lines[index].trim().startsWith("|")) {
+        rows.push(`<tr>${lines[index].split("|").slice(1, -1).map((cell) => `<td>${inline(cell.trim())}</td>`).join("")}</tr>`);
+        index += 1;
+      }
+      output.push(`<table><thead><tr>${headers}</tr></thead><tbody>${rows.join("")}</tbody></table>`);
+      continue;
+    }
+    const line = lines[index];
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      flushList();
+      const level = heading[1].length;
+      output.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      index += 1;
+      continue;
+    }
+    const bullet = line.match(/^\s*[-*+]\s+(.+)$/);
+    if (bullet) {
+      listItems.push(`<li>${inline(bullet[1])}</li>`);
+      index += 1;
+      continue;
+    }
+    flushList();
+    output.push(`${inline(line)}<br>`);
+    index += 1;
+  }
+  flushList();
+  element.innerHTML = output.join("");
 }
 
 function addStoredMessage(message) {
@@ -27,7 +78,8 @@ function addStoredMessage(message) {
   const element = document.createElement("div");
   element.className = `message ${message.role}`;
   const content = document.createElement("span");
-  content.textContent = message.content;
+  if (message.role === "assistant") renderAssistantText(content, message.content);
+  else content.textContent = message.content;
   element.append(content);
   group.appendChild(element);
   if (message.role === "user") {
@@ -73,9 +125,7 @@ async function editStoredMessage(message, content) {
     messageGroups.slice(currentIndex + 1).forEach((messageGroup) => messageGroup.remove());
     status.textContent = "Thinking...";
     editor.disabled = true;
-    actions.replaceChildren();
-    actions.classList.add("message-thinking");
-    actions.textContent = "Thinking...";
+    actions.remove();
     const response = await fetch(`/api/messages/${message.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: user.id, content: nextContent }) });
     if (response.ok) {
       await selectConversation(activeConversation);
@@ -219,10 +269,33 @@ form.addEventListener("submit", async (event) => {
   input.value = "";
   status.textContent = "Thinking...";
   try {
-    const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: user.id, conversation_id: activeConversation.id, message }) });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "The backend returned an error.");
-    addMessage(data.reply, "assistant");
+    const response = await fetch("/api/chat/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: user.id, conversation_id: activeConversation.id, message }) });
+    if (!response.ok) throw new Error("The backend returned an error.");
+    const assistant = addMessage("", "assistant");
+    const assistantBubble = assistant;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let reply = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop();
+      for (const event of events) {
+        const line = event.split("\n").find((part) => part.startsWith("data: "));
+        if (!line) continue;
+        const payload = line.slice(6);
+        if (payload === "[DONE]") continue;
+        const data = JSON.parse(payload);
+        if (data.error) throw new Error(data.error);
+        reply += data.token || "";
+        renderAssistantText(assistantBubble, reply);
+        messages.scrollTop = messages.scrollHeight;
+      }
+    }
+    await selectConversation(activeConversation);
     await selectConversation(activeConversation);
   } catch (error) {
     addMessage(error.message, "assistant");

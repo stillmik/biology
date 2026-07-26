@@ -1,9 +1,11 @@
 import os
+import json
 from typing import TypedDict
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from langgraph.graph import END, START, StateGraph
 from openai import OpenAI
 from psycopg.errors import UniqueViolation
@@ -204,3 +206,31 @@ def chat(request: ChatRequest) -> ChatResponse:
     result = chat_graph.invoke({"message": request.message, "history": previous_messages + [{"role": "user", "content": request.message}], "reply": ""})
     add_message(request.user_id, request.conversation_id, "assistant", result["reply"])
     return ChatResponse(reply=result["reply"])
+
+
+@app.post("/api/chat/stream")
+def stream_chat(request: ChatRequest) -> StreamingResponse:
+    if not get_user(request.user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    if not get_conversation(request.conversation_id, request.user_id):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    previous_messages = [{"role": row["role"], "content": row["content"]} for row in get_conversation_messages(request.conversation_id)]
+    add_message(request.user_id, request.conversation_id, "user", request.message)
+
+    def events():
+        api_key = os.getenv("XAI_API_KEY")
+        if not api_key:
+            yield f"data: {json.dumps({'error': 'XAI_API_KEY is not configured'})}\n\n"
+            return
+        client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
+        stream = client.responses.create(model=os.getenv("XAI_MODEL", "grok-4.3"), input=previous_messages + [{"role": "user", "content": request.message}], stream=True)
+        chunks = []
+        for event in stream:
+            if getattr(event, "type", "") == "response.output_text.delta":
+                chunks.append(event.delta)
+                yield f"data: {json.dumps({'token': event.delta})}\n\n"
+        reply = "".join(chunks)
+        add_message(request.user_id, request.conversation_id, "assistant", reply)
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
