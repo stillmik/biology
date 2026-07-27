@@ -39,9 +39,11 @@ def initialize_database_from_db() -> None:
         db.execute("CREATE TABLE IF NOT EXISTS conversation_summaries (id BIGSERIAL PRIMARY KEY, conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, content TEXT NOT NULL, token_count INTEGER NOT NULL, covered_until_message_id BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)")
         db.execute("CREATE TABLE IF NOT EXISTS conversation_summary_segments (id BIGSERIAL PRIMARY KEY, conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, content TEXT NOT NULL, token_count INTEGER NOT NULL, covered_from_message_id BIGINT NOT NULL, covered_until_message_id BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, CHECK (covered_from_message_id <= covered_until_message_id), UNIQUE (conversation_id, covered_from_message_id, covered_until_message_id))")
         db.execute("CREATE TABLE IF NOT EXISTS summary_jobs (id BIGSERIAL PRIMARY KEY, conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, source_message_id BIGINT REFERENCES messages(id) ON DELETE SET NULL, source_trace_id TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')), attempt_count INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 3, available_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, claimed_at TIMESTAMPTZ, completed_at TIMESTAMPTZ, last_error TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+        db.execute("CREATE TABLE IF NOT EXISTS generated_files (id TEXT PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, message_id BIGINT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE, filename TEXT NOT NULL, mime_type TEXT NOT NULL, storage_name TEXT NOT NULL UNIQUE, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)")
         db.execute("CREATE INDEX IF NOT EXISTS messages_conversation_id_id_index ON messages (conversation_id, id)")
         db.execute("CREATE INDEX IF NOT EXISTS summary_segments_conversation_id_covered_until_index ON conversation_summary_segments (conversation_id, covered_until_message_id DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS summary_jobs_ready_index ON summary_jobs (status, available_at, id)")
+        db.execute("CREATE INDEX IF NOT EXISTS generated_files_conversation_message_index ON generated_files (conversation_id, message_id)")
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS summary_jobs_one_active_per_conversation ON summary_jobs (conversation_id) WHERE status IN ('queued', 'running')")
         db.execute("INSERT INTO conversations (user_id, title) SELECT id, 'New conversation' FROM users WHERE NOT EXISTS (SELECT 1 FROM conversations WHERE conversations.user_id = users.id)")
         db.execute("UPDATE messages SET conversation_id = (SELECT id FROM conversations WHERE conversations.user_id = messages.user_id ORDER BY id LIMIT 1) WHERE conversation_id IS NULL")
@@ -93,7 +95,7 @@ def get_conversation_from_db(conversation_id: int, user_id: int) -> dict | None:
 @observe_database_operation("list_conversation_messages_from_db")
 def list_conversation_messages_from_db(conversation_id: int) -> list[dict]:
     with open_database_connection_from_db() as db:
-        return db.execute("SELECT id, role, content, created_at FROM messages WHERE conversation_id = %s ORDER BY id", (conversation_id,)).fetchall()
+        return db.execute("SELECT messages.id, messages.role, messages.content, messages.created_at, generated_files.id AS generated_file_id, generated_files.filename AS generated_file_name, generated_files.mime_type AS generated_file_mime_type FROM messages LEFT JOIN generated_files ON generated_files.message_id = messages.id WHERE messages.conversation_id = %s ORDER BY messages.id", (conversation_id,)).fetchall()
 
 
 @observe_database_operation("list_recent_conversation_messages_from_db")
@@ -157,6 +159,18 @@ def create_message_from_db(user_id: int, conversation_id: int, role: str, conten
         message = db.execute("INSERT INTO messages (user_id, conversation_id, role, content) VALUES (%s, %s, %s, %s) RETURNING id, conversation_id, role, content, created_at", (user_id, conversation_id, role, content)).fetchone()
         db.execute("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = %s AND user_id = %s", (conversation_id, user_id))
         return message
+
+
+@observe_database_operation("create_generated_file_from_db")
+def create_generated_file_from_db(file_id: str, user_id: int, conversation_id: int, message_id: int, filename: str, mime_type: str, storage_name: str) -> dict:
+    with open_database_connection_from_db() as db:
+        return db.execute("INSERT INTO generated_files (id, user_id, conversation_id, message_id, filename, mime_type, storage_name) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id, filename, mime_type, storage_name", (file_id, user_id, conversation_id, message_id, filename, mime_type, storage_name)).fetchone()
+
+
+@observe_database_operation("get_generated_file_for_user_from_db")
+def get_generated_file_for_user_from_db(file_id: str, user_id: int) -> dict | None:
+    with open_database_connection_from_db() as db:
+        return db.execute("SELECT generated_files.id, generated_files.filename, generated_files.mime_type, generated_files.storage_name FROM generated_files JOIN conversations ON conversations.id = generated_files.conversation_id WHERE generated_files.id = %s AND conversations.user_id = %s", (file_id, user_id)).fetchone()
 
 
 @observe_database_operation("enqueue_summary_job_from_db")
@@ -319,7 +333,7 @@ def update_user_message_and_delete_following_from_db(message_id: int, user_id: i
 def list_conversation_messages_page_from_db(conversation_id: int, limit: int, before_id: int | None) -> list[dict]:
     with open_database_connection_from_db() as connection:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT id, role, content, created_at FROM messages WHERE conversation_id = %s AND (%s::bigint IS NULL OR id < %s) ORDER BY id DESC LIMIT %s", (conversation_id, before_id, before_id, limit))
+            cursor.execute("SELECT messages.id, messages.role, messages.content, messages.created_at, generated_files.id AS generated_file_id, generated_files.filename AS generated_file_name, generated_files.mime_type AS generated_file_mime_type FROM messages LEFT JOIN generated_files ON generated_files.message_id = messages.id WHERE messages.conversation_id = %s AND (%s::bigint IS NULL OR messages.id < %s) ORDER BY messages.id DESC LIMIT %s", (conversation_id, before_id, before_id, limit))
             rows = cursor.fetchall()
     return list(reversed(rows))
 

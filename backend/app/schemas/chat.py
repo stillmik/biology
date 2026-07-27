@@ -38,6 +38,7 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     user_id: int = Field(gt=0)
     conversation_id: int = Field(gt=0)
+    generate_file: bool = False
 
     @field_validator("message")
     @classmethod
@@ -73,6 +74,7 @@ class HistoryMessage(BaseModel):
     role: str
     content: str
     created_at: str
+    generated_file: dict[str, str] | None = None
 
 
 class ConversationResponse(BaseModel):

@@ -5,9 +5,16 @@ const form = document.querySelector("#chat-form");
 const input = document.querySelector("#message-input");
 const messages = document.querySelector("#messages");
 const status = document.querySelector("#status");
+const fileInput = document.querySelector("#file-input");
+const generateFileToggle = document.querySelector("#generate-file-toggle");
+const attachmentStatus = document.querySelector("#attachment-status");
 const conversationList = document.querySelector("#conversations");
 let activeConversation = null;
+let generateFile = false;
 document.querySelector("#username").textContent = user ? `@${user.username}` : "";
+
+fileInput.addEventListener("change", () => { const file = fileInput.files[0]; attachmentStatus.textContent = file ? `Attached: ${file.name}` : ""; });
+generateFileToggle.addEventListener("click", () => { generateFile = !generateFile; generateFileToggle.classList.toggle("is-active", generateFile); generateFileToggle.setAttribute("aria-pressed", String(generateFile)); generateFileToggle.title = generateFile ? "Generate a response file: on" : "Generate a PDF response file"; });
 
 function addMessage(text, role) {
   const group = document.createElement("div");
@@ -19,6 +26,26 @@ function addMessage(text, role) {
   messages.appendChild(group);
   messages.scrollTop = messages.scrollHeight;
   return element;
+}
+
+function addGeneratedFileLink(group, generatedFile) {
+  if (!generatedFile?.id || group.querySelector(".generated-file-link")) return;
+  const link = document.createElement("a");
+  link.className = "generated-file-link";
+  link.href = `/api/files/${encodeURIComponent(generatedFile.id)}?user_id=${encodeURIComponent(user.id)}`;
+  link.textContent = `📄 ${generatedFile.filename}`;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  group.appendChild(link);
+}
+
+function getUserDisplayContent(content) {
+  const attachmentMarker = "\n\n[Attached file: ";
+  const markerIndex = content.indexOf(attachmentMarker);
+  if (markerIndex < 0) return content;
+  const attachmentEnd = content.indexOf("]", markerIndex);
+  const filename = attachmentEnd < 0 ? "attachment" : content.slice(markerIndex + attachmentMarker.length, attachmentEnd);
+  return `${content.slice(0, markerIndex)}\n\n📎 ${filename}`;
 }
 
 function escapeHtml(text) {
@@ -79,9 +106,10 @@ function addStoredMessage(message) {
   element.className = `message ${message.role}`;
   const content = document.createElement("span");
   if (message.role === "assistant") renderAssistantText(content, message.content);
-  else content.textContent = message.content;
+  else content.textContent = getUserDisplayContent(message.content);
   element.append(content);
   group.appendChild(element);
+  if (message.generated_file) addGeneratedFileLink(group, message.generated_file);
   if (message.role === "user") {
     const actions = document.createElement("span");
     actions.className = "message-actions";
@@ -94,7 +122,7 @@ function addStoredMessage(message) {
     edit.className = "message-edit";
     edit.textContent = "✎";
     edit.title = "Edit message";
-    edit.addEventListener("click", () => editStoredMessage(message, content));
+    edit.addEventListener("click", () => editStoredMessage({ ...message, content: getUserDisplayContent(message.content).replace(/\n\n📎 .+$/, "") }, content));
     actions.append(copy, edit);
     group.appendChild(actions);
   }
@@ -269,7 +297,7 @@ async function selectConversation(conversation) {
   renderConversations(conversations);
 }
 
-async function readTokenStream(response, onToken) {
+async function readTokenStream(response, onToken, onFile = () => {}) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -287,6 +315,7 @@ async function readTokenStream(response, onToken) {
       const data = JSON.parse(payload);
       if (data.error) throw new Error(data.error);
       if (data.token) onToken(data.token);
+      if (data.file) onFile(data.file);
     }
   }
 }
@@ -297,15 +326,27 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const message = input.value.trim();
   if (!message || !activeConversation) return;
-  addMessage(message, "user");
+  const attachedFile = fileInput.files[0];
+  const shouldGenerateFile = generateFile;
+  addMessage(attachedFile ? `${message}\n\n📎 ${attachedFile.name}` : message, "user");
   input.value = "";
+  fileInput.value = "";
+  attachmentStatus.textContent = "";
+  generateFile = false;
+  generateFileToggle.classList.remove("is-active");
+  generateFileToggle.setAttribute("aria-pressed", "false");
+  generateFileToggle.title = "Generate a PDF response file";
   status.textContent = "Thinking...";
   try {
-    const response = await fetch("/api/chat/stream", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: user.id, conversation_id: activeConversation.id, message }) });
-    if (!response.ok) throw new Error("The backend returned an error.");
+    const requestOptions = attachedFile ? { method: "POST", body: (() => { const data = new FormData(); data.append("user_id", user.id); data.append("conversation_id", activeConversation.id); data.append("message", message); data.append("file", attachedFile); data.append("generate_file", String(shouldGenerateFile)); return data; })() } : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: user.id, conversation_id: activeConversation.id, message, generate_file: shouldGenerateFile }) };
+    const response = await fetch(attachedFile ? "/api/chat/stream-with-file" : "/api/chat/stream", requestOptions);
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.detail || `The backend returned an error (${response.status}).`);
+    }
     let assistantBubble = null;
     let reply = "";
-    await readTokenStream(response, (token) => { reply += token; if (!assistantBubble) assistantBubble = addMessage("", "assistant"); renderAssistantText(assistantBubble, reply); messages.scrollTop = messages.scrollHeight; });
+    await readTokenStream(response, (token) => { reply += token; if (!assistantBubble) assistantBubble = addMessage("", "assistant"); renderAssistantText(assistantBubble, reply); messages.scrollTop = messages.scrollHeight; }, (generatedFile) => { if (!assistantBubble) assistantBubble = addMessage("", "assistant"); addGeneratedFileLink(assistantBubble.closest(".message-group"), generatedFile); });
     await selectConversation(activeConversation);
   } catch (error) {
     addMessage(error.message, "assistant");

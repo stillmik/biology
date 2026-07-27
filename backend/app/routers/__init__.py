@@ -1,4 +1,4 @@
-from . import chat, conversations, messages, users
+from . import chat, conversations, files, messages, users
 
 
-__all__ = ["chat", "conversations", "messages", "users"]
+__all__ = ["chat", "conversations", "files", "messages", "users"]

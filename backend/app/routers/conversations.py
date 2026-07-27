@@ -51,7 +51,7 @@ def list_conversation_messages(conversation_id: int, user_id: int, limit: int = 
             raise HTTPException(status_code=404, detail="Conversation not found")
 
         rows = list_conversation_messages_page_from_db(conversation_id=conversation_id, limit=limit, before_id=before_id)
-        result = [HistoryMessage(id=row["id"], role=row["role"], content=row["content"], created_at=row["created_at"].isoformat()) for row in rows]
+        result = [HistoryMessage(id=row["id"], role=row["role"], content=row["content"], created_at=row["created_at"].isoformat(), generated_file={"id": row["generated_file_id"], "filename": row["generated_file_name"], "mime_type": row["generated_file_mime_type"]} if row["generated_file_id"] else None) for row in rows]
     return result
 
 

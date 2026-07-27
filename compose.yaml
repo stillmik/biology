@@ -37,6 +37,8 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:18000:8000"
+    volumes:
+      - biology_generated_files:/app/generated_files
     labels:
       logging: "alloy"
       service: "backend"
@@ -183,3 +185,4 @@ volumes:
   biology_loki_data:
   biology_alloy_data:
   biology_grafana_data:
+  biology_generated_files:

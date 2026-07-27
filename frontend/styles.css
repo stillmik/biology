@@ -66,6 +66,17 @@ h1 { margin: 8px 0; font-size: clamp(2rem, 5vw, 3.4rem); }
 .message.assistant { background: #343434; border-bottom-left-radius: 4px; }
 .message.user { color: #f1f1f1; background: #404040; border-bottom-right-radius: 4px; }
 .composer { display: flex; gap: 10px; align-items: end; }
+.message-input-wrap { position: relative; flex: 1; min-width: 0; }
+.message-input-wrap textarea { width: 100%; padding-left: 52px; }
+.generate-file-toggle { position: absolute; top: 8px; left: 10px; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; color: #d7d7d7; background: transparent; border-radius: 50%; font-size: 1rem; line-height: 1; }
+.generate-file-toggle:hover, .generate-file-toggle.is-active { color: #fff; background: #505050; }
+.generate-file-toggle.is-active { box-shadow: 0 0 0 1px #a5a5a5; }
+.file-upload { position: absolute; bottom: 8px; left: 10px; display: grid; place-items: center; width: 28px; height: 28px; color: #d7d7d7; background: transparent; border-radius: 50%; cursor: pointer; font-size: 1.45rem; font-weight: 400; line-height: 1; }
+.file-upload:hover { color: #fff; background: #505050; }
+.file-upload input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.generated-file-link { display: inline-flex; align-items: center; width: fit-content; max-width: 80%; margin-top: 6px; padding: 8px 11px; color: #f1f1f1; background: #404040; border-radius: 10px; text-decoration: none; overflow-wrap: anywhere; }
+.generated-file-link:hover { background: #505050; text-decoration: underline; }
+.attachment-status { min-height: 1.2em; margin: 4px 0 0; color: #a8cfa8; font-size: .85rem; }
 textarea { flex: 1; resize: vertical; color: #f1f1f1; background: #343434; border: 1px solid #4a4a4a; border-radius: 14px; padding: 13px; font: inherit; outline: none; }
 textarea::placeholder { color: #9a9ba3; }
 textarea:focus { border-color: #8b8b8b; box-shadow: 0 0 0 2px #8b8b8b33; }
