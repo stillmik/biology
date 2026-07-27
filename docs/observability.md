@@ -217,6 +217,25 @@ Prometheus and Loki continue observing every request when LangSmith sampling is 
 
 ## Troubleshooting
 
+## Post-response summarization and latency
+
+Normal streaming now follows `save user message → load_context → mark_post_response_summary → prepare_answer_context → Grok stream → save reply → enqueue summary job → [DONE]`. Routine summarization never sits before the first token. `prepare_answer_context` is the LangSmith child run that shows attached segment count and tokens, raw message count and tokens, prompt estimate, and the context-budget result.
+
+Each chat root trace records three distinct latency values: `context_preparation_seconds` from saving the user message until the Grok input is complete; `request_to_first_token_seconds` from backend request receipt until the browser can receive its first text delta; and `model_first_token_seconds` from the xAI request until its first delta. The first is the best target for context optimizations, the second is what the user feels, and the third isolates provider speed.
+
+After reply persistence the backend inserts or refreshes one active `summary_jobs` row for the conversation. `summary-worker` claims it, locks the conversation, and creates a separate `biology-post_response_summarization` root trace in the same LangSmith thread. A source message ID and source trace ID link the job back to its reply. Failed jobs retry with capped exponential backoff; queued jobs survive worker restarts. Inspect them with:
+
+```powershell
+docker compose exec db psql -U biology -d biology_chat -c "SELECT id, conversation_id, status, attempt_count, source_message_id, created_at, claimed_at, completed_at, last_error FROM summary_jobs ORDER BY id DESC LIMIT 20;"
+docker compose logs --tail 100 summary-worker
+```
+
+`summarization_trigger_progress` now counts all raw messages not yet covered by a summary, including the newest raw tail. `KEEP_RECENT_TOKENS` affects only which older messages are eligible for the next segment. A hard prompt overflow activates synchronous safety compression and increments `biology_context_safety_fallbacks_total`.
+
+Grafana's **Model Streaming** dashboard has p50/p95 context-preparation, end-to-end first-token, and provider-only first-token panels. **LangGraph & Summarization** shows summary job statuses, job/queue p95 latency, and hard-fallback count.
+
+Prometheus scrapes the worker's private `summary-worker:9101/metrics` endpoint, so background job counts and durations remain available even though the worker is a separate process. Reload Prometheus after changing its configuration with `curl.exe -X POST http://localhost:19090/-/reload`.
+
 Check container health:
 
 ```powershell

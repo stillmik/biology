@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def log_context_snapshot(event_name: str, state: ChatState, result: dict) -> None:
-    log_event(logger, logging.INFO, event_name, conversation_id=state["conversation_id"], attached_summary_segment_count=result["included_summary"]["segment_count"], attached_summary_tokens=result["included_summary"]["total_token_count"], summary_cursor=result["summary_cursor"], unsummarized_message_count=len(result["unsummarized_messages"]), projected_tokens=result["projected_tokens"], tokens_until_summarization=result["tokens_until_summarization"], summarization_trigger_progress=round(result["summarization_trigger_progress"], 4), summarizable_message_count=result["summarizable_message_count"])
+    log_event(logger, logging.INFO, event_name, conversation_id=state["conversation_id"], attached_summary_segment_count=result["included_summary"]["segment_count"], attached_summary_tokens=result["included_summary"]["total_token_count"], summary_cursor=result["summary_cursor"], unsummarized_message_count=len(result["unsummarized_messages"]), raw_message_tokens=result["raw_message_tokens"], projected_tokens=result["projected_tokens"], tokens_until_summarization=result["tokens_until_summarization"], summarization_trigger_progress=round(result["summarization_trigger_progress"], 4), summarizable_message_count=result["summarizable_message_count"])
 
 
 def load_context_node(state: ChatState) -> dict:
@@ -44,16 +44,22 @@ def reload_context_node(state: ChatState) -> dict:
 def needs_summary_node(state: ChatState) -> dict[str, str]:
     with observe_graph_node("needs_summary"):
         if not state["should_summarize"]:
-            decision, reason = "build_context", "unsummarized_messages_below_trigger_threshold"
+            decision, reason = "finish", "unsummarized_messages_below_trigger_threshold"
         elif not state["can_summarize"]:
-            decision, reason = "build_context", "no_summarizable_messages_after_recent_tail"
+            decision, reason = "finish", "no_summarizable_messages_after_recent_tail"
         elif state["summary_passes"] >= MAX_SUMMARY_PASSES:
-            decision, reason = "build_context", "maximum_summary_passes_reached"
+            decision, reason = "finish", "maximum_summary_passes_reached"
         else:
             decision, reason = "summarize", "unsummarized_messages_above_trigger_threshold"
     GRAPH_BRANCHES.labels(branch=decision).inc()
     log_event(logger, logging.INFO, "summary_decision", conversation_id=state["conversation_id"], decision=decision, reason=reason, projected_tokens=state["projected_tokens"], tokens_until_summarization=state["tokens_until_summarization"], summarization_trigger_progress=round(state["summarization_trigger_progress"], 4), summarizable_message_count=state["summarizable_message_count"], summary_passes=state["summary_passes"])
     return {"summary_decision": decision, "summary_reason": reason}
+
+
+def force_safety_summary_node(state: ChatState) -> dict[str, bool]:
+    with observe_graph_node("force_safety_summary"):
+        log_event(logger, logging.WARNING, "context_safety_summary_forced", conversation_id=state["conversation_id"], projected_tokens=state["projected_tokens"], raw_message_tokens=state["raw_message_tokens"])
+    return {"should_summarize": True}
 
 
 def summarize_node(state: ChatState) -> dict:
@@ -84,8 +90,8 @@ def summarize_node(state: ChatState) -> dict:
     return {"summary_passes": state["summary_passes"] + 1, "summary_messages_processed": len(chunk), "summary_token_reduction": token_reduction}
 
 
-def build_context_node(state: ChatState) -> dict:
-    with observe_graph_node("build_context"):
+def prepare_answer_context_node(state: ChatState) -> dict:
+    with observe_graph_node("prepare_answer_context"):
         history: list[dict[str, str]] = [{"role": "system", "content": BIOLOGY_SYSTEM_PROMPT}]
         history.extend(format_summary_segment(segment) for segment in state["attached_summaries"])
         history.extend({"role": message["role"], "content": message["content"]} for message in state["unsummarized_messages"])
@@ -93,9 +99,21 @@ def build_context_node(state: ChatState) -> dict:
         CONTEXT_TOKENS.labels(stage="final").observe(projected_total)
         if projected_total > MAX_CONTEXT_TOKENS:
             CONTEXT_BUDGET_WARNINGS.inc()
-            raise ContextBudgetError("Conversation context is too large and could not be compressed within the configured summary-pass limit.")
-    log_event(logger, logging.INFO, "context_built", conversation_id=state["conversation_id"], attached_summary_segment_count=len(state["attached_summaries"]), attached_summary_tokens=state["included_summary"]["total_token_count"], summary_cursor=state["summary_cursor"], history_message_count=len(history), unsummarized_message_count=len(state["unsummarized_messages"]), projected_tokens=projected_total)
-    return {"history": history}
+            raise ContextBudgetError("Conversation context is too large and requires safety compression.")
+    log_event(logger, logging.INFO, "answer_context_prepared", conversation_id=state["conversation_id"], attached_summary_segment_count=len(state["attached_summaries"]), attached_summary_tokens=state["included_summary"]["total_token_count"], summary_cursor=state["summary_cursor"], history_message_count=len(history), unsummarized_message_count=len(state["unsummarized_messages"]), raw_message_tokens=state["raw_message_tokens"], projected_tokens=projected_total)
+    return {"history": history, "context_budget_result": "within_limit"}
+
+
+def mark_post_response_summary_node(state: ChatState) -> dict[str, str]:
+    with observe_graph_node("mark_post_response_summary"):
+        if state["should_summarize"] and state["can_summarize"]:
+            decision, reason = "queued", "unsummarized_raw_messages_reached_trigger"
+        elif state["should_summarize"]:
+            decision, reason = "deferred", "recent_tail_has_no_summarizable_messages"
+        else:
+            decision, reason = "not_needed", "unsummarized_raw_messages_below_trigger_threshold"
+    log_event(logger, logging.INFO, "post_response_summary_decision", conversation_id=state["conversation_id"], decision=decision, reason=reason, raw_message_tokens=state["raw_message_tokens"], tokens_until_summarization=state["tokens_until_summarization"])
+    return {"summary_decision": decision, "summary_reason": reason}
 
 
 def grok_node(state: ChatState) -> dict[str, str]:
@@ -104,5 +122,5 @@ def grok_node(state: ChatState) -> dict[str, str]:
     return {"reply": reply}
 
 
-def context_route(state: ChatState) -> Literal["summarize", "build_context"]:
-    return state["summary_decision"]
+def context_route(state: ChatState) -> Literal["summarize", "finish"]:
+    return "summarize" if state["summary_decision"] == "summarize" else "finish"

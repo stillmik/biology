@@ -2,6 +2,8 @@ from typing import Any, NotRequired, TypedDict
 
 from pydantic import BaseModel, Field, field_validator
 
+from .config import MAX_USER_INPUT_TOKENS
+
 
 class ChatMessage(TypedDict):
     id: int
@@ -15,6 +17,7 @@ class ChatState(TypedDict):
     included_summary: dict[str, Any]
     summary_cursor: int
     unsummarized_messages: list[ChatMessage]
+    raw_message_tokens: int
     projected_tokens: int
     tokens_until_summarization: int
     summarization_trigger_progress: float
@@ -27,6 +30,7 @@ class ChatState(TypedDict):
     summary_messages_processed: int
     summary_token_reduction: int
     history: list[dict[str, str]]
+    context_budget_result: str
     reply: NotRequired[str]
 
 
@@ -41,6 +45,8 @@ class ChatRequest(BaseModel):
         stripped = value.strip()
         if not stripped:
             raise ValueError("Message cannot be blank")
+        if max(1, (len(stripped) + 2) // 3) > MAX_USER_INPUT_TOKENS:
+            raise ValueError(f"Message cannot exceed approximately {MAX_USER_INPUT_TOKENS} tokens")
         return stripped
 
 
@@ -105,5 +111,8 @@ class MessageEditRequest(BaseModel):
 
         if not stripped:
             raise ValueError("Message cannot be blank")
+
+        if max(1, (len(stripped) + 2) // 3) > MAX_USER_INPUT_TOKENS:
+            raise ValueError(f"Message cannot exceed approximately {MAX_USER_INPUT_TOKENS} tokens")
 
         return stripped

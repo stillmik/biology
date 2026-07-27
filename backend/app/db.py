@@ -38,6 +38,11 @@ def initialize_database_from_db() -> None:
 
         db.execute("CREATE TABLE IF NOT EXISTS conversation_summaries (id BIGSERIAL PRIMARY KEY, conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, content TEXT NOT NULL, token_count INTEGER NOT NULL, covered_until_message_id BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)")
         db.execute("CREATE TABLE IF NOT EXISTS conversation_summary_segments (id BIGSERIAL PRIMARY KEY, conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, content TEXT NOT NULL, token_count INTEGER NOT NULL, covered_from_message_id BIGINT NOT NULL, covered_until_message_id BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, CHECK (covered_from_message_id <= covered_until_message_id), UNIQUE (conversation_id, covered_from_message_id, covered_until_message_id))")
+        db.execute("CREATE TABLE IF NOT EXISTS summary_jobs (id BIGSERIAL PRIMARY KEY, conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, source_message_id BIGINT REFERENCES messages(id) ON DELETE SET NULL, source_trace_id TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')), attempt_count INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 3, available_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, claimed_at TIMESTAMPTZ, completed_at TIMESTAMPTZ, last_error TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+        db.execute("CREATE INDEX IF NOT EXISTS messages_conversation_id_id_index ON messages (conversation_id, id)")
+        db.execute("CREATE INDEX IF NOT EXISTS summary_segments_conversation_id_covered_until_index ON conversation_summary_segments (conversation_id, covered_until_message_id DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS summary_jobs_ready_index ON summary_jobs (status, available_at, id)")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS summary_jobs_one_active_per_conversation ON summary_jobs (conversation_id) WHERE status IN ('queued', 'running')")
         db.execute("INSERT INTO conversations (user_id, title) SELECT id, 'New conversation' FROM users WHERE NOT EXISTS (SELECT 1 FROM conversations WHERE conversations.user_id = users.id)")
         db.execute("UPDATE messages SET conversation_id = (SELECT id FROM conversations WHERE conversations.user_id = messages.user_id ORDER BY id LIMIT 1) WHERE conversation_id IS NULL")
 
@@ -147,10 +152,70 @@ def create_summary_segment_from_db(conversation_id: int, content: str, token_cou
 
 
 @observe_database_operation("create_message_from_db")
-def create_message_from_db(user_id: int, conversation_id: int, role: str, content: str) -> None:
+def create_message_from_db(user_id: int, conversation_id: int, role: str, content: str) -> dict:
     with open_database_connection_from_db() as db:
-        db.execute("INSERT INTO messages (user_id, conversation_id, role, content) VALUES (%s, %s, %s, %s)", (user_id, conversation_id, role, content))
+        message = db.execute("INSERT INTO messages (user_id, conversation_id, role, content) VALUES (%s, %s, %s, %s) RETURNING id, conversation_id, role, content, created_at", (user_id, conversation_id, role, content)).fetchone()
         db.execute("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = %s AND user_id = %s", (conversation_id, user_id))
+        return message
+
+
+@observe_database_operation("enqueue_summary_job_from_db")
+def enqueue_summary_job_from_db(conversation_id: int, source_message_id: int | None, source_trace_id: str = "") -> dict:
+    with open_database_connection_from_db() as db:
+        with db.transaction():
+            active_job = db.execute("SELECT id, conversation_id, source_message_id, source_trace_id, status, attempt_count, max_attempts, available_at, claimed_at, completed_at, last_error, created_at, updated_at FROM summary_jobs WHERE conversation_id = %s AND status IN ('queued', 'running') ORDER BY id DESC LIMIT 1 FOR UPDATE", (conversation_id,)).fetchone()
+            if active_job:
+                if active_job["status"] == "queued":
+                    return db.execute("UPDATE summary_jobs SET source_message_id = %s, source_trace_id = %s, available_at = NOW(), updated_at = NOW() WHERE id = %s RETURNING id, conversation_id, source_message_id, source_trace_id, status, attempt_count, max_attempts, available_at, claimed_at, completed_at, last_error, created_at, updated_at", (source_message_id, source_trace_id, active_job["id"])).fetchone()
+                return active_job
+            return db.execute("INSERT INTO summary_jobs (conversation_id, source_message_id, source_trace_id) VALUES (%s, %s, %s) RETURNING id, conversation_id, source_message_id, source_trace_id, status, attempt_count, max_attempts, available_at, claimed_at, completed_at, last_error, created_at, updated_at", (conversation_id, source_message_id, source_trace_id)).fetchone()
+
+
+@observe_database_operation("claim_summary_job_from_db")
+def claim_summary_job_from_db() -> dict | None:
+    with open_database_connection_from_db() as db:
+        with db.transaction():
+            job = db.execute("SELECT id FROM summary_jobs WHERE status = 'queued' AND available_at <= NOW() ORDER BY available_at, id FOR UPDATE SKIP LOCKED LIMIT 1").fetchone()
+            if not job:
+                return None
+            return db.execute("UPDATE summary_jobs SET status = 'running', attempt_count = attempt_count + 1, claimed_at = NOW(), updated_at = NOW() WHERE id = %s RETURNING id, conversation_id, source_message_id, source_trace_id, status, attempt_count, max_attempts, available_at, claimed_at, completed_at, last_error, created_at, updated_at", (job["id"],)).fetchone()
+
+
+@observe_database_operation("complete_summary_job_from_db")
+def complete_summary_job_from_db(job_id: int) -> None:
+    with open_database_connection_from_db() as db:
+        db.execute("UPDATE summary_jobs SET status = 'completed', completed_at = NOW(), updated_at = NOW(), last_error = '' WHERE id = %s", (job_id,))
+
+
+@observe_database_operation("retry_summary_job_from_db")
+def retry_summary_job_from_db(job_id: int, sanitized_error: str) -> dict | None:
+    with open_database_connection_from_db() as db:
+        with db.transaction():
+            job = db.execute("SELECT id, attempt_count, max_attempts FROM summary_jobs WHERE id = %s FOR UPDATE", (job_id,)).fetchone()
+            if not job:
+                return None
+            status = "failed" if job["attempt_count"] >= job["max_attempts"] else "queued"
+            return db.execute("UPDATE summary_jobs SET status = %s, available_at = CASE WHEN %s = 'queued' THEN NOW() + (LEAST(300, POWER(2, attempt_count) * 5)::TEXT || ' seconds')::INTERVAL ELSE available_at END, completed_at = CASE WHEN %s = 'failed' THEN NOW() ELSE NULL END, updated_at = NOW(), last_error = %s WHERE id = %s RETURNING id, conversation_id, source_message_id, source_trace_id, status, attempt_count, max_attempts, available_at, claimed_at, completed_at, last_error, created_at, updated_at", (status, status, status, sanitized_error[:500], job_id)).fetchone()
+
+
+@observe_database_operation("cancel_pending_summary_jobs_for_conversation_from_db")
+def cancel_pending_summary_jobs_for_conversation_from_db(conversation_id: int) -> int:
+    with open_database_connection_from_db() as db:
+        result = db.execute("UPDATE summary_jobs SET status = 'cancelled', completed_at = NOW(), updated_at = NOW() WHERE conversation_id = %s AND status = 'queued'", (conversation_id,))
+        return result.rowcount
+
+
+@observe_database_operation("list_summary_job_counts_from_db")
+def list_summary_job_counts_from_db() -> list[dict]:
+    with open_database_connection_from_db() as db:
+        return db.execute("SELECT status, COUNT(*) AS count FROM summary_jobs GROUP BY status").fetchall()
+
+
+@observe_database_operation("release_stale_summary_jobs_from_db")
+def release_stale_summary_jobs_from_db(stale_after_seconds: int = 900) -> int:
+    with open_database_connection_from_db() as db:
+        result = db.execute("UPDATE summary_jobs SET status = 'queued', available_at = NOW(), claimed_at = NULL, updated_at = NOW(), last_error = 'worker_recovery' WHERE status = 'running' AND claimed_at < NOW() - (%s::TEXT || ' seconds')::INTERVAL", (stale_after_seconds,))
+        return result.rowcount
 
 
 @observe_database_operation("update_conversation_title_from_db")
@@ -183,6 +248,7 @@ def delete_message_from_db(message_id: int, user_id: int) -> bool:
             if not message:
                 return False
             db.execute("DELETE FROM conversation_summary_segments WHERE conversation_id = %s AND covered_until_message_id >= %s", (message["conversation_id"], message_id))
+            db.execute("UPDATE summary_jobs SET status = 'cancelled', completed_at = NOW(), updated_at = NOW() WHERE conversation_id = %s AND status = 'queued'", (message["conversation_id"],))
             db.execute("DELETE FROM messages WHERE id = %s", (message_id,))
             db.execute("UPDATE conversations SET updated_at = NOW() WHERE id = %s", (message["conversation_id"],))
             return True
@@ -234,6 +300,7 @@ def update_user_message_and_delete_following_from_db(message_id: int, user_id: i
             db.execute("DELETE FROM messages WHERE conversation_id = %s AND id > %s", (conversation_id, message_id))
 
             db.execute("DELETE FROM conversation_summary_segments WHERE conversation_id = %s AND covered_until_message_id >= %s", (conversation_id, message_id))
+            db.execute("UPDATE summary_jobs SET status = 'cancelled', completed_at = NOW(), updated_at = NOW() WHERE conversation_id = %s AND status = 'queued'", (conversation_id,))
             db.execute("UPDATE conversations SET updated_at = NOW() WHERE id = %s", (conversation_id,))
 
     return updated_message

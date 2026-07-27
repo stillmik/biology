@@ -63,8 +63,11 @@ SUMMARY_TOKEN_REDUCTION = Histogram("biology_summary_token_reduction", "Estimate
 MODEL_REQUESTS = Counter("biology_model_requests_total", "xAI model requests by operation and result.", ["model", "operation", "result"])
 MODEL_DURATION = Histogram("biology_model_request_duration_seconds", "xAI model request duration.", ["model", "operation"], buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120))
 MODEL_FIRST_TOKEN = Histogram("biology_model_first_token_seconds", "Time until the first streamed model delta.", ["model"], buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60))
+CONTEXT_PREPARATION_DURATION = Histogram("biology_context_preparation_seconds", "Time from user-message persistence through complete answer-context construction.", ["operation"], buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30))
+REQUEST_TO_FIRST_TOKEN = Histogram("biology_request_to_first_token_seconds", "Time from backend request receipt through the first streamed text delta.", ["operation"], buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60))
 MODEL_INPUT_TOKENS = Counter("biology_model_input_tokens_total", "Input tokens reported by xAI.", ["model", "operation"])
 MODEL_OUTPUT_TOKENS = Counter("biology_model_output_tokens_total", "Output tokens reported by xAI.", ["model", "operation"])
+MODEL_INCOMPLETE = Counter("biology_model_incomplete_total", "Model responses that ended before normal completion.", ["model", "operation", "reason"])
 STREAMS = Counter("biology_streams_total", "Streaming responses by result.", ["result"])
 STREAM_DELTAS = Histogram("biology_stream_delta_count", "Text deltas in a completed stream.", buckets=(1, 2, 5, 10, 25, 50, 100, 250, 500, 1000))
 STREAM_OUTPUT_CHARACTERS = Histogram("biology_stream_output_characters", "Characters in a completed streamed response.", buckets=(10, 50, 100, 250, 500, 1000, 2000, 4000, 8000, 16000))
@@ -75,6 +78,11 @@ DB_CONNECTIONS_OPEN = Gauge("biology_database_connections_open", "Connections cu
 DB_LOCK_WAIT_DURATION = Histogram("biology_database_lock_wait_seconds", "Time spent waiting for a per-conversation PostgreSQL advisory lock.", buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30))
 LANGSMITH_TRACES_ATTEMPTED = Counter("biology_langsmith_traces_attempted_total", "LangSmith chatbot root traces attempted by this process.", ["execution_type"])
 LANGSMITH_EXPORT_FAILURES = Counter("biology_langsmith_export_failures_total", "Synchronous LangSmith tracing failures.")
+SUMMARY_JOBS = Counter("biology_summary_jobs_total", "Background summary jobs by action and result.", ["action", "result"])
+SUMMARY_JOB_DURATION = Histogram("biology_summary_job_duration_seconds", "Background summary-job duration.", buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120))
+SUMMARY_JOB_QUEUE_DELAY = Histogram("biology_summary_job_queue_delay_seconds", "Delay from summary-job creation until worker claim.", buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300, 900))
+SUMMARY_JOB_STATUS = Gauge("biology_summary_jobs_current", "Summary jobs currently stored by status.", ["status"])
+CONTEXT_SAFETY_FALLBACKS = Counter("biology_context_safety_fallbacks_total", "Synchronous safety compressions caused by hard context overflow.")
 
 
 _STANDARD_LOG_FIELDS = set(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
@@ -379,6 +387,13 @@ def finish_chatbot_trace(run: Any | None, outputs: dict[str, Any]) -> None:
     except Exception:
         LANGSMITH_EXPORT_FAILURES.inc()
         log_event(logging.getLogger("biology.langsmith"), logging.WARNING, "langsmith_trace_output_failed", exception_type=sys.exc_info()[0].__name__ if sys.exc_info()[0] else "Exception")
+
+
+def get_chatbot_trace_id(run: Any | None) -> str:
+    try:
+        return str(getattr(run, "trace_id", "") or getattr(run, "id", "")) if run is not None else ""
+    except Exception:
+        return ""
 
 
 def record_model_usage(model: str, operation: str, response: Any) -> None:

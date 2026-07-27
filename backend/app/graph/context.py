@@ -48,9 +48,8 @@ def load_context_snapshot(state: ChatState) -> dict:
     projected_messages.extend(format_summary_segment(segment) for segment in attached_summaries)
     projected_messages.extend({"role": message["role"], "content": message["content"]} for message in unsummarized_messages)
     projected_tokens = estimate_context_tokens(projected_messages) + MAX_RESPONSE_TOKENS
-    summarizable_messages = select_summarizable_messages(unsummarized_messages)
-    summarizable_tokens = sum(estimate_message_tokens(message) for message in summarizable_messages)
-    tokens_until_summarization = max(0, SUMMARY_TRIGGER_TOKENS - summarizable_tokens)
-    summarization_trigger_progress = summarizable_tokens / SUMMARY_TRIGGER_TOKENS
+    raw_message_tokens = sum(estimate_message_tokens(message) for message in unsummarized_messages)
+    tokens_until_summarization = max(0, SUMMARY_TRIGGER_TOKENS - raw_message_tokens)
+    summarization_trigger_progress = raw_message_tokens / SUMMARY_TRIGGER_TOKENS
     summary_chunk = select_messages_for_summary(unsummarized_messages)
-    return {"attached_summaries": attached_summaries, "included_summary": included_summary, "summary_cursor": summary_cursor, "unsummarized_messages": unsummarized_messages, "projected_tokens": projected_tokens, "tokens_until_summarization": tokens_until_summarization, "summarization_trigger_progress": summarization_trigger_progress, "should_summarize": summarizable_tokens >= SUMMARY_TRIGGER_TOKENS, "can_summarize": bool(summary_chunk), "summarizable_message_count": len(summary_chunk)}
+    return {"attached_summaries": attached_summaries, "included_summary": included_summary, "summary_cursor": summary_cursor, "unsummarized_messages": unsummarized_messages, "raw_message_tokens": raw_message_tokens, "projected_tokens": projected_tokens, "tokens_until_summarization": tokens_until_summarization, "summarization_trigger_progress": summarization_trigger_progress, "should_summarize": raw_message_tokens >= SUMMARY_TRIGGER_TOKENS, "can_summarize": bool(summary_chunk), "summarizable_message_count": len(summary_chunk)}

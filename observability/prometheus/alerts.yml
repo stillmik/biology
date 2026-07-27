@@ -48,6 +48,24 @@ groups:
           summary: Conversation context exceeded its budget
           description: At least one conversation could not be compressed below the configured context limit.
 
+      - alert: BiologySummaryWorkerFailures
+        expr: sum(biology_summary_jobs_current{status="failed"}) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Background summary job failed permanently
+          description: At least one durable summary job exhausted its retry attempts.
+
+      - alert: BiologySlowContextPreparation
+        expr: histogram_quantile(0.95, sum by (le) (rate(biology_context_preparation_seconds_bucket[10m]))) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Context preparation is slow
+          description: p95 context preparation has exceeded two seconds for five minutes.
+
       - alert: BiologyLangGraphNodeFailures
         expr: increase(biology_langgraph_node_executions_total{result="error"}[10m]) > 2
         for: 2m
