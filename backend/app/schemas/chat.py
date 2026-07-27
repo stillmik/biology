@@ -31,6 +31,8 @@ class ChatState(TypedDict):
     summary_token_reduction: int
     history: list[dict[str, str]]
     context_budget_result: str
+    generate_file: NotRequired[bool]
+    file_content: NotRequired[str]
     reply: NotRequired[str]
 
 

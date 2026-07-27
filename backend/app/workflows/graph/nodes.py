@@ -3,10 +3,10 @@ import time
 
 from typing import Literal
 
-from ...core.config import MAX_CONTEXT_TOKENS, MAX_RESPONSE_TOKENS, MAX_SUMMARY_PASSES, SUMMARY_MAX_TOKENS, XAI_MODEL, XAI_SUMMARY_MODEL
+from ...core.config import MAX_CONTEXT_TOKENS, MAX_FILE_CONTENT_SIZE, MAX_FILE_DESCRIPTION_TOKENS, MAX_RESPONSE_TOKENS, MAX_SUMMARY_PASSES, SUMMARY_MAX_TOKENS, XAI_MODEL, XAI_SUMMARY_MODEL
 from ...core.observability import CONTEXT_BUDGET_WARNINGS, CONTEXT_SUMMARIZATION_TRIGGER_PROGRESS, CONTEXT_TOKENS, CONTEXT_TOKENS_UNTIL_SUMMARIZATION, GRAPH_BRANCHES, SUMMARIES, SUMMARY_DURATION, SUMMARY_MESSAGES, SUMMARY_REMAINING_MESSAGES, SUMMARY_TOKEN_REDUCTION, log_event, observe_graph_node
 from ...infrastructure.database import create_summary_segment_from_db
-from ...prompts import BIOLOGY_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT
+from ...prompts import CHAT_RESPONSE_SYSTEM_PROMPT, CHAT_RESPONSE_WITH_FILE_SYSTEM_PROMPT, FILE_GENERATION_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT
 from ...schemas.chat import ChatState, ContextBudgetError
 from ...services.model_service import generate_model_response
 from ...utils.chat_context import estimate_context_tokens, estimate_message_tokens, estimate_tokens
@@ -91,10 +91,12 @@ def summarize_node(state: ChatState) -> dict:
 
 def prepare_answer_context_node(state: ChatState) -> dict:
     with observe_graph_node("prepare_answer_context"):
-        history: list[dict[str, str]] = [{"role": "system", "content": BIOLOGY_SYSTEM_PROMPT}]
+        system_prompt = CHAT_RESPONSE_WITH_FILE_SYSTEM_PROMPT if state.get("generate_file") else CHAT_RESPONSE_SYSTEM_PROMPT
+        history: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
         history.extend(format_summary_segment(segment) for segment in state["attached_summaries"])
         history.extend({"role": message["role"], "content": message["content"]} for message in state["unsummarized_messages"])
-        projected_total = estimate_context_tokens(history) + MAX_RESPONSE_TOKENS
+        response_token_budget = MAX_FILE_DESCRIPTION_TOKENS if state.get("generate_file") else MAX_RESPONSE_TOKENS
+        projected_total = estimate_context_tokens(history) + response_token_budget
         CONTEXT_TOKENS.labels(stage="final").observe(projected_total)
         if projected_total > MAX_CONTEXT_TOKENS:
             CONTEXT_BUDGET_WARNINGS.inc()
@@ -117,8 +119,16 @@ def mark_post_response_summary_node(state: ChatState) -> dict[str, str]:
 
 def grok_node(state: ChatState) -> dict[str, str]:
     with observe_graph_node("grok"):
-        reply = generate_model_response(state["history"], model=XAI_MODEL, max_output_tokens=MAX_RESPONSE_TOKENS, operation="chat")
+        response_token_budget = MAX_FILE_DESCRIPTION_TOKENS if state.get("generate_file") else MAX_RESPONSE_TOKENS
+        reply = generate_model_response(state["history"], model=XAI_MODEL, max_output_tokens=response_token_budget, operation="chat")
     return {"reply": reply}
+
+
+def file_generation_node(state: ChatState) -> dict[str, str]:
+    with observe_graph_node("file_generation"):
+        history = [{"role": "system", "content": FILE_GENERATION_SYSTEM_PROMPT}, *state["history"][1:]]
+        file_content = generate_model_response(history, model=XAI_MODEL, max_output_tokens=MAX_FILE_CONTENT_SIZE, operation="file_generation")
+    return {"file_content": file_content}
 
 
 def context_route(state: ChatState) -> Literal["summarize", "finish"]:

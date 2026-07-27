@@ -1,7 +1,7 @@
 from langgraph.graph import END, START, StateGraph
 
 from ...schemas.chat import ChatState
-from .nodes import context_route, force_safety_summary_node, grok_node, load_context_node, mark_post_response_summary_node, needs_summary_node, prepare_answer_context_node, reload_context_node, summarize_node
+from .nodes import context_route, file_generation_node, force_safety_summary_node, grok_node, load_context_node, mark_post_response_summary_node, needs_summary_node, prepare_answer_context_node, reload_context_node, summarize_node
 
 
 def create_answer_context_graph(include_answer_node: bool):
@@ -44,7 +44,16 @@ def create_summary_graph(include_context_node: bool):
     return builder.compile()
 
 
+def create_file_generation_graph():
+    builder = StateGraph(ChatState)
+    builder.add_node("file_generation", file_generation_node)
+    builder.add_edge(START, "file_generation")
+    builder.add_edge("file_generation", END)
+    return builder.compile()
+
+
 chat_graph = create_answer_context_graph(include_answer_node=True)
 prepare_graph = create_answer_context_graph(include_answer_node=False)
 summary_graph = create_summary_graph(include_context_node=False)
 safety_context_graph = create_summary_graph(include_context_node=True)
+file_generation_graph = create_file_generation_graph()

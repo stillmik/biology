@@ -2,21 +2,25 @@ import json
 import logging
 import time
 
+import contextvars
+
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Iterator
 
 from fastapi import HTTPException
 
 from ..core.clients import get_xai_client
-from ..core.config import MAX_FILE_CONTENT_SIZE, MAX_RESPONSE_TOKENS, XAI_MODEL
+from ..core.config import MAX_FILE_CONTENT_SIZE, MAX_FILE_DESCRIPTION_TOKENS, MAX_PARALLEL_FILE_GENERATIONS, MAX_RESPONSE_TOKENS, XAI_MODEL
 from ..core.observability import CONTEXT_PREPARATION_DURATION, CONTEXT_SAFETY_FALLBACKS, MODEL_DURATION, MODEL_FIRST_TOKEN, MODEL_INCOMPLETE, MODEL_REQUESTS, REQUEST_TO_FIRST_TOKEN, STREAM_DELTAS, STREAM_OUTPUT_CHARACTERS, STREAMS, chatbot_trace, finish_chatbot_trace, get_chatbot_trace_id, hash_identifier, langgraph_config, log_event, observe_graph_execution, observe_operation, record_model_usage
 from ..infrastructure.database import count_messages_after_from_db, create_message_from_db, enqueue_summary_job_from_db, get_user_message_from_db, lock_conversation_from_db, update_user_message_and_delete_following_from_db
 from ..schemas.chat import ChatRequest, ContextBudgetError
 from .response_file_service import create_generated_response_file
 from ..utils.chat_context import create_initial_graph_state
-from ..workflows.graph import prepare_graph, safety_context_graph
+from ..workflows.graph import file_generation_graph, prepare_graph, safety_context_graph
 
 
 logger = logging.getLogger(__name__)
+FILE_GENERATION_EXECUTOR = ThreadPoolExecutor(max_workers=MAX_PARALLEL_FILE_GENERATIONS, thread_name_prefix="biology-file-generation")
 
 
 def create_stream_state() -> dict[str, Any]:
@@ -35,22 +39,41 @@ def get_model_finish_reason(response: Any) -> str:
     return str(reason or getattr(response, "status", None) or "unknown")
 
 
-def prepare_stream_answer_context(user_id: int, conversation_id: int, operation: str, started_at: float, graph_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+def prepare_stream_answer_context(user_id: int, conversation_id: int, operation: str, started_at: float, graph_metadata: dict[str, Any] | None = None, generate_file: bool = False) -> dict[str, Any]:
     graph_config = langgraph_config(user_id, conversation_id, operation)
     graph_config["metadata"].update(graph_metadata or {})
     try:
         with observe_graph_execution(operation):
-            prepared_context = prepare_graph.invoke(create_initial_graph_state(conversation_id), config=graph_config)
+            prepared_context = prepare_graph.invoke(create_initial_graph_state(conversation_id, generate_file), config=graph_config)
     except ContextBudgetError:
         CONTEXT_SAFETY_FALLBACKS.inc()
         log_event(logger, logging.WARNING, "context_safety_fallback_started", conversation_id=conversation_id, operation=operation)
         with observe_graph_execution(f"{operation}_safety_fallback"):
-            prepared_context = safety_context_graph.invoke(create_initial_graph_state(conversation_id), config=graph_config)
+            prepared_context = safety_context_graph.invoke(create_initial_graph_state(conversation_id, generate_file), config=graph_config)
         prepared_context["context_budget_result"] = "safety_compressed"
     duration = time.perf_counter() - started_at
     CONTEXT_PREPARATION_DURATION.labels(operation=operation).observe(duration)
     log_event(logger, logging.INFO, "answer_context_preparation_completed", conversation_id=conversation_id, operation=operation, context_preparation_seconds=round(duration, 6), attached_segment_count=prepared_context["included_summary"]["segment_count"], attached_summary_tokens=prepared_context["included_summary"]["total_token_count"], raw_message_count=len(prepared_context["unsummarized_messages"]), raw_message_tokens=prepared_context["raw_message_tokens"], prompt_token_estimate=prepared_context["projected_tokens"], context_budget_result=prepared_context["context_budget_result"])
     return prepared_context
+
+
+def generate_file_content(user_id: int, conversation_id: int, prepared_context: dict[str, Any]) -> str:
+    graph_config = langgraph_config(user_id, conversation_id, "file_generation")
+    with observe_graph_execution("file_generation"):
+        result = file_generation_graph.invoke({**prepared_context, "generate_file": True}, config=graph_config)
+    return result["file_content"]
+
+
+def start_parallel_file_generation(user_id: int, conversation_id: int, prepared_context: dict[str, Any]) -> Future[str]:
+    tracing_context = contextvars.copy_context()
+    future = FILE_GENERATION_EXECUTOR.submit(tracing_context.run, generate_file_content, user_id, conversation_id, prepared_context.copy())
+    log_event(logger, logging.INFO, "file_generation_started", conversation_id=conversation_id, execution_mode="parallel")
+    return future
+
+
+def cancel_parallel_file_generation(future: Future[str] | None) -> None:
+    if future is not None and not future.done():
+        future.cancel()
 
 
 def stream_model_response_events(conversation_id: int, prepared_context: dict[str, Any], stream_state: dict[str, Any], operation: str, max_output_tokens: int = MAX_RESPONSE_TOKENS) -> Iterator[str]:
@@ -78,7 +101,7 @@ def stream_model_response_events(conversation_id: int, prepared_context: dict[st
         yield "data: " + json.dumps({"token": event.delta}) + "\n\n"
 
 
-def save_streamed_model_response(user_id: int, conversation_id: int, stream_state: dict[str, Any], operation: str, source_trace_id: str, request_message: str = "", generate_file: bool = False) -> tuple[str, dict, dict | None]:
+def save_streamed_model_response(user_id: int, conversation_id: int, stream_state: dict[str, Any], operation: str, source_trace_id: str, request_message: str = "", generate_file: bool = False, file_content: str = "") -> tuple[str, dict, dict | None]:
     reply = "".join(stream_state["chunks"])
     duration = time.perf_counter() - stream_state["model_started_at"]
     MODEL_REQUESTS.labels(model=XAI_MODEL, operation=operation, result="success").inc()
@@ -97,7 +120,7 @@ def save_streamed_model_response(user_id: int, conversation_id: int, stream_stat
     stream_state["stream_recorded"] = True
     assistant_message = create_message_from_db(user_id, conversation_id, "assistant", reply)
 
-    generated_file = create_generated_response_file(user_id, conversation_id, assistant_message["id"], request_message, reply) if generate_file else None
+    generated_file = create_generated_response_file(user_id, conversation_id, assistant_message["id"], request_message, file_content) if generate_file else None
     summary_job = enqueue_summary_job_from_db(conversation_id, assistant_message["id"], source_trace_id)
     log_event(logger, logging.INFO, "model_stream_completed", conversation_id=conversation_id, model=XAI_MODEL, duration_seconds=round(duration, 6), delta_count=len(stream_state["chunks"]), output_characters=len(reply), finish_reason=finish_reason, operation=operation)
     log_event(logger, logging.INFO, "message_saved", conversation_id=conversation_id, user_id_hash=hash_identifier(user_id), role="assistant")
@@ -135,16 +158,30 @@ def handle_stream_disconnection(conversation_id: int, stream_state: dict[str, An
 
 def stream_chat_events(request: ChatRequest) -> Iterator[str]:
     stream_state = create_stream_state()
+    file_generation_future: Future[str] | None = None
     try:
         with observe_operation("chat_stream"), lock_conversation_from_db(request.conversation_id):
             with chatbot_trace(request.user_id, request.conversation_id, "chat_stream", request.message) as trace_run:
                 user_message = create_message_from_db(request.user_id, request.conversation_id, "user", request.message)
                 log_event(logger, logging.INFO, "message_saved", conversation_id=request.conversation_id, user_id_hash=hash_identifier(request.user_id), role="user")
-                prepared_context = prepare_stream_answer_context(request.user_id, request.conversation_id, "chat_stream", stream_state["request_started_at"])
+                prepared_context = prepare_stream_answer_context(request.user_id, request.conversation_id, "chat_stream", stream_state["request_started_at"], generate_file=request.generate_file)
                 stream_state["context_preparation_seconds"] = time.perf_counter() - stream_state["request_started_at"]
-                yield from stream_model_response_events(request.conversation_id, prepared_context, stream_state, "chat_stream", MAX_FILE_CONTENT_SIZE if request.generate_file else MAX_RESPONSE_TOKENS)
+                if request.generate_file:
+                    file_generation_future = start_parallel_file_generation(request.user_id, request.conversation_id, prepared_context)
+                yield from stream_model_response_events(request.conversation_id, prepared_context, stream_state, "chat_stream", MAX_FILE_DESCRIPTION_TOKENS if request.generate_file else MAX_RESPONSE_TOKENS)
 
-                reply, summary_job, generated_file = save_streamed_model_response(request.user_id, request.conversation_id, stream_state, "chat_stream", get_chatbot_trace_id(trace_run), request.message, request.generate_file)
+                file_content = ""
+                if file_generation_future is not None:
+                    try:
+                        file_content = file_generation_future.result()
+                    except Exception as error:
+                        log_event(logger, logging.ERROR, "file_generation_failed", conversation_id=request.conversation_id, exception_type=type(error).__name__)
+                        reply, summary_job, generated_file = save_streamed_model_response(request.user_id, request.conversation_id, stream_state, "chat_stream", get_chatbot_trace_id(trace_run), request.message, False, "")
+                        finish_streamed_chat_trace(trace_run, prepared_context, stream_state, reply, summary_job, {"source_message_id": user_message["id"], "generated_file": None, "file_generation_status": "failed"})
+                        yield create_stream_error_event("The response was generated, but the file could not be created.")
+                        yield "data: [DONE]\n\n"
+                        return
+                reply, summary_job, generated_file = save_streamed_model_response(request.user_id, request.conversation_id, stream_state, "chat_stream", get_chatbot_trace_id(trace_run), request.message, request.generate_file, file_content)
                 finish_streamed_chat_trace(trace_run, prepared_context, stream_state, reply, summary_job, {"source_message_id": user_message["id"], "generated_file": generated_file})
 
                 if generated_file:
@@ -158,6 +195,8 @@ def stream_chat_events(request: ChatRequest) -> Iterator[str]:
         raise
     except Exception as error:
         yield handle_stream_failure(request.conversation_id, stream_state, error, "chat_stream")
+    finally:
+        cancel_parallel_file_generation(file_generation_future)
 
 
 def stream_regenerated_message_events(message_id: int, user_id: int, content: str) -> Iterator[str]:

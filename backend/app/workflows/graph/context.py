@@ -1,6 +1,6 @@
-from ...core.config import KEEP_RECENT_TOKENS, MAX_RESPONSE_TOKENS, SUMMARY_CHUNK_MAX_TOKENS, SUMMARY_CONTEXT_MAX_TOKENS, SUMMARY_TRIGGER_TOKENS
+from ...core.config import KEEP_RECENT_TOKENS, MAX_FILE_DESCRIPTION_TOKENS, MAX_RESPONSE_TOKENS, SUMMARY_CHUNK_MAX_TOKENS, SUMMARY_CONTEXT_MAX_TOKENS, SUMMARY_TRIGGER_TOKENS
 from ...infrastructure.database import get_latest_summary_segment_from_db, list_conversation_messages_after_from_db, list_recent_summary_segments_within_token_budget_from_db
-from ...prompts import BIOLOGY_SYSTEM_PROMPT
+from ...prompts import CHAT_RESPONSE_SYSTEM_PROMPT, CHAT_RESPONSE_WITH_FILE_SYSTEM_PROMPT
 from ...schemas.chat import ChatMessage, ChatState
 from ...utils.chat_context import estimate_context_tokens, estimate_message_tokens
 
@@ -44,10 +44,12 @@ def load_context_snapshot(state: ChatState) -> dict:
     included_summary = {"is_included": bool(attached_summaries), "segment_count": len(attached_summaries), "total_token_count": sum(segment["token_count"] for segment in attached_summaries), "segments": attached_summaries}
     rows = list_conversation_messages_after_from_db(state["conversation_id"], summary_cursor)
     unsummarized_messages: list[ChatMessage] = [{"id": row["id"], "role": row["role"], "content": row["content"]} for row in rows]
-    projected_messages: list[dict[str, str]] = [{"role": "system", "content": BIOLOGY_SYSTEM_PROMPT}]
+    system_prompt = CHAT_RESPONSE_WITH_FILE_SYSTEM_PROMPT if state.get("generate_file") else CHAT_RESPONSE_SYSTEM_PROMPT
+    projected_messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     projected_messages.extend(format_summary_segment(segment) for segment in attached_summaries)
     projected_messages.extend({"role": message["role"], "content": message["content"]} for message in unsummarized_messages)
-    projected_tokens = estimate_context_tokens(projected_messages) + MAX_RESPONSE_TOKENS
+    response_token_budget = MAX_FILE_DESCRIPTION_TOKENS if state.get("generate_file") else MAX_RESPONSE_TOKENS
+    projected_tokens = estimate_context_tokens(projected_messages) + response_token_budget
     raw_message_tokens = sum(estimate_message_tokens(message) for message in unsummarized_messages)
     tokens_until_summarization = max(0, SUMMARY_TRIGGER_TOKENS - raw_message_tokens)
     summarization_trigger_progress = raw_message_tokens / SUMMARY_TRIGGER_TOKENS
