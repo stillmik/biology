@@ -2,7 +2,7 @@ from typing import Any, NotRequired, TypedDict
 
 from pydantic import BaseModel, Field, field_validator
 
-from .config import MAX_USER_INPUT_TOKENS
+from ..core.config import MAX_USER_INPUT_TOKENS
 
 
 class ChatMessage(TypedDict):

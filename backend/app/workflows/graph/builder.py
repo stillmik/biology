@@ -1,6 +1,6 @@
 from langgraph.graph import END, START, StateGraph
 
-from ..states import ChatState
+from ...schemas.chat import ChatState
 from .nodes import context_route, force_safety_summary_node, grok_node, load_context_node, mark_post_response_summary_node, needs_summary_node, prepare_answer_context_node, reload_context_node, summarize_node
 
 

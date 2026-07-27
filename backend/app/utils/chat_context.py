@@ -1,11 +1,11 @@
 import math
 
 
-from .db import get_conversation_from_db, get_user_from_db
+from ..infrastructure.database import get_conversation_from_db, get_user_from_db
 from fastapi import HTTPException
 
 
-from .states import ChatState, ConversationResponse
+from ..schemas.chat import ChatState, ConversationResponse
 
 
 def estimate_tokens(text: str) -> int:

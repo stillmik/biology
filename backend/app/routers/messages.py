@@ -3,11 +3,11 @@ import logging
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from ..db import get_user_message_from_db
-from ..observability import log_event
+from ..core.observability import log_event
+from ..infrastructure.database import get_user_message_from_db
+from ..schemas.chat import ChatResponse, ContextBudgetError, MessageEditRequest
 from ..services.chat_service import regenerate_chat_reply
 from ..services.streaming_service import stream_regenerated_message_events
-from ..states import ChatResponse, ContextBudgetError, MessageEditRequest
 
 
 router = APIRouter(prefix="/api/messages", tags=["messages"])

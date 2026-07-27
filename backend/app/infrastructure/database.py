@@ -9,7 +9,7 @@ import psycopg
 
 from psycopg.errors import DuplicateColumn
 from psycopg.rows import dict_row
-from .observability import DB_CONNECTION_FAILURES, DB_LOCK_WAIT_DURATION, log_event, observe_database_operation
+from ..core.observability import DB_CONNECTION_FAILURES, DB_LOCK_WAIT_DURATION, log_event, observe_database_operation
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://biology:biology@db:5432/biology_chat")

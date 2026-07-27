@@ -1,8 +1,8 @@
 import logging
 import time
 
-from ..clients import get_xai_client
-from ..observability import MODEL_DURATION, MODEL_REQUESTS, log_event, record_model_usage
+from ..core.clients import get_xai_client
+from ..core.observability import MODEL_DURATION, MODEL_REQUESTS, log_event, record_model_usage
 
 
 logger = logging.getLogger(__name__)

@@ -6,13 +6,13 @@ from typing import Any, Iterator
 
 from fastapi import HTTPException
 
-from ..clients import get_xai_client
-from ..config import MAX_RESPONSE_TOKENS, XAI_MODEL
-from ..db import count_messages_after_from_db, create_message_from_db, enqueue_summary_job_from_db, get_user_message_from_db, lock_conversation_from_db, update_user_message_and_delete_following_from_db
-from ..graph import prepare_graph, safety_context_graph
-from ..helper_functions import create_initial_graph_state
-from ..observability import CONTEXT_PREPARATION_DURATION, CONTEXT_SAFETY_FALLBACKS, MODEL_DURATION, MODEL_FIRST_TOKEN, MODEL_INCOMPLETE, MODEL_REQUESTS, REQUEST_TO_FIRST_TOKEN, STREAM_DELTAS, STREAM_OUTPUT_CHARACTERS, STREAMS, chatbot_trace, finish_chatbot_trace, get_chatbot_trace_id, hash_identifier, langgraph_config, log_event, observe_graph_execution, observe_operation, record_model_usage
-from ..states import ChatRequest, ContextBudgetError
+from ..core.clients import get_xai_client
+from ..core.config import MAX_RESPONSE_TOKENS, XAI_MODEL
+from ..core.observability import CONTEXT_PREPARATION_DURATION, CONTEXT_SAFETY_FALLBACKS, MODEL_DURATION, MODEL_FIRST_TOKEN, MODEL_INCOMPLETE, MODEL_REQUESTS, REQUEST_TO_FIRST_TOKEN, STREAM_DELTAS, STREAM_OUTPUT_CHARACTERS, STREAMS, chatbot_trace, finish_chatbot_trace, get_chatbot_trace_id, hash_identifier, langgraph_config, log_event, observe_graph_execution, observe_operation, record_model_usage
+from ..infrastructure.database import count_messages_after_from_db, create_message_from_db, enqueue_summary_job_from_db, get_user_message_from_db, lock_conversation_from_db, update_user_message_and_delete_following_from_db
+from ..schemas.chat import ChatRequest, ContextBudgetError
+from ..utils.chat_context import create_initial_graph_state
+from ..workflows.graph import prepare_graph, safety_context_graph
 
 
 logger = logging.getLogger(__name__)

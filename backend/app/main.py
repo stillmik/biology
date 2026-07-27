@@ -10,10 +10,10 @@ from langsmith.wrappers import wrap_openai
 from openai import OpenAI
 
 
-from .clients import close_xai_client, set_xai_client
-from .config import APP_VERSION, MAX_CONTEXT_TOKENS, SUMMARY_TRIGGER_TOKENS, XAI_MODEL, XAI_SUMMARY_MODEL
-from .db import initialize_database_from_db
-from .observability import RequestObservabilityMiddleware, configure_logging, langsmith_tracing_extra, log_event, metrics_response
+from .core.clients import close_xai_client, set_xai_client
+from .core.config import APP_VERSION, MAX_CONTEXT_TOKENS, SUMMARY_TRIGGER_TOKENS, XAI_MODEL, XAI_SUMMARY_MODEL
+from .core.observability import RequestObservabilityMiddleware, configure_logging, langsmith_tracing_extra, log_event, metrics_response
+from .infrastructure.database import initialize_database_from_db
 from .routers import chat, conversations, messages, users
 
 

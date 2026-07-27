@@ -69,7 +69,7 @@ services:
     build:
       context: ./backend
     container_name: biology-chat-summary-worker
-    command: ["python", "-m", "app.summary_worker"]
+    command: ["python", "-m", "app.workers.summary_worker"]
     environment:
       PYTHONUNBUFFERED: "1"
       DATABASE_URL: postgresql://biology:biology@db:5432/biology_chat

@@ -2,7 +2,7 @@ import json
 import logging
 import unittest
 
-from app.observability import JsonLogFormatter, anonymize_trace_data, hash_identifier, langgraph_config, metrics_response
+from app.core.observability import JsonLogFormatter, anonymize_trace_data, hash_identifier, langgraph_config, metrics_response
 
 
 class ObservabilityTests(unittest.TestCase):

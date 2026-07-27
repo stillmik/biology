@@ -2,9 +2,9 @@ import unittest
 
 from unittest.mock import patch
 
-from app.db import invalidate_memories_after_message_from_db
-from app.graph import prepare_graph
-from app.helper_functions import create_initial_graph_state
+from app.infrastructure.database import invalidate_memories_after_message_from_db
+from app.utils.chat_context import create_initial_graph_state
+from app.workflows.graph import prepare_graph
 
 
 class DatabaseResult:
@@ -38,7 +38,7 @@ class EditContextTests(unittest.TestCase):
         valid_summary = {"id": 1, "content": "Messages one through four", "token_count": 8, "covered_from_message_id": 1, "covered_until_message_id": 4}
         raw_messages = [{"id": 5, "role": "user", "content": "Original question"}, {"id": 6, "role": "assistant", "content": "Original answer"}, {"id": 7, "role": "user", "content": "Edited question"}]
 
-        with patch("app.graph.context.get_latest_summary_segment_from_db", return_value=valid_summary), patch("app.graph.context.list_recent_summary_segments_within_token_budget_from_db", return_value=[valid_summary]), patch("app.graph.context.list_conversation_messages_after_from_db", return_value=raw_messages):
+        with patch("app.workflows.graph.context.get_latest_summary_segment_from_db", return_value=valid_summary), patch("app.workflows.graph.context.list_recent_summary_segments_within_token_budget_from_db", return_value=[valid_summary]), patch("app.workflows.graph.context.list_conversation_messages_after_from_db", return_value=raw_messages):
             result = prepare_graph.invoke(create_initial_graph_state(7), config={"configurable": {"thread_id": "7"}})
 
         self.assertEqual(result["summary_cursor"], 4)

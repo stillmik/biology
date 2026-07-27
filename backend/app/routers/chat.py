@@ -3,11 +3,11 @@ import logging
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from ..helper_functions import validate_user_and_conversation
-from ..observability import log_event
+from ..core.observability import log_event
+from ..schemas.chat import ChatRequest, ChatResponse, ContextBudgetError
 from ..services.chat_service import generate_chat_reply
 from ..services.streaming_service import stream_chat_events
-from ..states import ChatRequest, ChatResponse, ContextBudgetError
+from ..utils.chat_context import validate_user_and_conversation
 
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])

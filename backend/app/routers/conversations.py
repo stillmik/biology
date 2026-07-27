@@ -2,10 +2,10 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Query
 
-from ..db import create_conversation_from_db, delete_conversation_from_db, get_conversation_from_db, get_user_from_db, list_conversation_messages_page_from_db, list_user_conversations_from_db, update_conversation_title_from_db
-from ..helper_functions import create_conversation_response
-from ..observability import hash_identifier, log_event, observe_operation
-from ..states import ConversationRequest, ConversationResponse, HistoryMessage
+from ..core.observability import hash_identifier, log_event, observe_operation
+from ..infrastructure.database import create_conversation_from_db, delete_conversation_from_db, get_conversation_from_db, get_user_from_db, list_conversation_messages_page_from_db, list_user_conversations_from_db, update_conversation_title_from_db
+from ..schemas.chat import ConversationRequest, ConversationResponse, HistoryMessage
+from ..utils.chat_context import create_conversation_response
 
 
 router = APIRouter(prefix="/api", tags=["conversations"])
