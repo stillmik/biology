@@ -1,4 +1,4 @@
-from typing import NotRequired, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -11,10 +11,13 @@ class ChatMessage(TypedDict):
 
 class ChatState(TypedDict):
     conversation_id: int
-    summary: str
+    attached_summaries: list[dict[str, Any]]
+    included_summary: dict[str, Any]
     summary_cursor: int
     unsummarized_messages: list[ChatMessage]
     projected_tokens: int
+    tokens_until_summarization: int
+    summarization_trigger_progress: float
     should_summarize: bool
     can_summarize: bool
     summary_passes: int

@@ -72,7 +72,7 @@ def save_streamed_model_response(user_id: int, conversation_id: int, stream_stat
 
 
 def finish_streamed_chat_trace(trace_run: Any, prepared_context: dict[str, Any], stream_state: dict[str, Any], reply: str) -> None:
-    finish_chatbot_trace(trace_run, {"reply": reply, "summary_decision": prepared_context["summary_decision"], "summary_reason": prepared_context["summary_reason"], "summary_passes": prepared_context["summary_passes"], "summary_cursor": prepared_context["summary_cursor"], "delta_count": len(stream_state["chunks"]), "output_characters": len(reply)})
+    finish_chatbot_trace(trace_run, {"reply": reply, "summary_decision": prepared_context["summary_decision"], "summary_reason": prepared_context["summary_reason"], "included_summary": prepared_context["included_summary"], "summary_passes": prepared_context["summary_passes"], "summary_cursor": prepared_context["summary_cursor"], "projected_tokens": prepared_context["projected_tokens"], "tokens_until_summarization": prepared_context["tokens_until_summarization"], "summarization_trigger_progress": prepared_context["summarization_trigger_progress"], "delta_count": len(stream_state["chunks"]), "output_characters": len(reply)})
 
 
 def handle_stream_failure(conversation_id: int, stream_state: dict[str, Any], error: Exception, operation: str) -> str:

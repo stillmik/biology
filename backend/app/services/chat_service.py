@@ -22,12 +22,13 @@ def generate_chat_reply(user_id: int, conversation_id: int, message: str) -> str
             reply = result["reply"]
             create_message_from_db(user_id, conversation_id, "assistant", reply)
             log_event(logger, logging.INFO, "message_saved", conversation_id=conversation_id, user_id_hash=hash_identifier(user_id), role="assistant")
-            finish_chatbot_trace(trace_run, {"reply": reply, "summary_decision": result["summary_decision"], "summary_reason": result["summary_reason"], "summary_passes": result["summary_passes"], "summary_cursor": result["summary_cursor"], "unsummarized_message_count": len(result["unsummarized_messages"])})
+            finish_chatbot_trace(trace_run, {"reply": reply, "summary_decision": result["summary_decision"], "summary_reason": result["summary_reason"], "included_summary": result["included_summary"], "summary_passes": result["summary_passes"], "summary_cursor": result["summary_cursor"], "unsummarized_message_count": len(result["unsummarized_messages"]), "projected_tokens": result["projected_tokens"], "tokens_until_summarization": result["tokens_until_summarization"], "summarization_trigger_progress": result["summarization_trigger_progress"]})
     return reply
 
 
 def regenerate_chat_reply(message_id: int, user_id: int, content: str) -> str:
     message = get_user_message_from_db(message_id, user_id)
+
     if not message:
         return ""
 
@@ -52,5 +53,5 @@ def regenerate_chat_reply(message_id: int, user_id: int, content: str) -> str:
             reply = result["reply"]
             create_message_from_db(user_id, conversation_id, "assistant", reply)
             log_event(logger, logging.INFO, "message_saved", conversation_id=conversation_id, user_id_hash=hash_identifier(user_id), role="assistant")
-            finish_chatbot_trace(trace_run, {"reply": reply, "edited_message_id": message_id, "messages_deleted": messages_deleted, "summary_decision": result["summary_decision"], "summary_reason": result["summary_reason"], "summary_passes": result["summary_passes"], "summary_cursor": result["summary_cursor"]})
+            finish_chatbot_trace(trace_run, {"reply": reply, "edited_message_id": message_id, "messages_deleted": messages_deleted, "summary_decision": result["summary_decision"], "summary_reason": result["summary_reason"], "included_summary": result["included_summary"], "summary_passes": result["summary_passes"], "summary_cursor": result["summary_cursor"], "projected_tokens": result["projected_tokens"], "tokens_until_summarization": result["tokens_until_summarization"], "summarization_trigger_progress": result["summarization_trigger_progress"]})
     return reply

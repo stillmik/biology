@@ -2,7 +2,7 @@
 
 A frontend/backend microbiology chat application for learning LangGraph incrementally.
 
-The API saves the user message, runs an explicit LangGraph workflow, loads the complete unsummarized context after the latest summary checkpoint, decides whether another rolling summary is needed, and calls xAI's `grok-4.3`. Users, conversations, messages, and summaries are stored in PostgreSQL.
+The API saves the user message, runs an explicit LangGraph workflow, loads non-overlapping summary segments plus the complete raw tail after the newest segment, decides whether another segment is needed, and calls xAI's `grok-4.3`. Users, conversations, messages, and summary segments are stored in PostgreSQL.
 
 The application includes production-style observability:
 
@@ -19,7 +19,7 @@ docker compose up --build
 
 Copy `.env.example` to `.env` and set `XAI_API_KEY` before starting the app. Set `LANGSMITH_API_KEY`, `OBSERVABILITY_HASH_SALT`, and a strong `GRAFANA_ADMIN_PASSWORD` to enable the complete observability setup.
 
-Chat context includes the latest rolling summary plus every message after its checkpoint. Context and summary budgets are configurable through `.env`. Token counts use a conservative approximate character-based estimate because the xAI tokenizer is not bundled locally.
+Chat context includes the newest summary segments that fit `SUMMARY_CONTEXT_MAX_TOKENS`, in chronological order, plus every message after the newest segment checkpoint. Context and summary budgets are configurable through `.env`. Token counts use a conservative approximate character-based estimate because the xAI tokenizer is not bundled locally.
 
 Open http://localhost:18080.
 

@@ -103,7 +103,7 @@ needs_summary
                                END
 ```
 
-Multiple `summarize → reload_context → needs_summary` passes may occur until context is small enough or `MAX_SUMMARY_PASSES` is reached.
+Multiple `summarize → reload_context → needs_summary` passes may occur until the raw tail is below the segment trigger or `MAX_SUMMARY_PASSES` is reached.
 
 The wrapped xAI Responses API creates an LLM child run containing model input, streamed output, timing, invocation parameters, and provider-reported usage.
 
@@ -125,10 +125,10 @@ Rebuild the backend, create a fresh conversation, and send several detailed mess
 1. Open the `biology-chat` LangSmith project.
 2. Open **Threads** and select the thread whose `thread_id` equals the PostgreSQL conversation ID.
 3. Open the latest trace.
-4. Confirm `needs_summary` returns `summary_decision=summarize` with `context_above_trigger_threshold`.
-5. Inspect `summarize` and compare the previous summary, selected older messages, generated replacement summary, and cursor.
-6. Inspect `reload_context` and confirm only messages after the new summary cursor remain unsummarized.
-7. Inspect `build_context` and confirm Grok receives one rolling summary plus every unsummarized message.
+4. Confirm `needs_summary` returns `summary_decision=summarize` with `unsummarized_messages_above_trigger_threshold`.
+5. Inspect `summarize` and confirm the selected older message range becomes one standalone, non-overlapping summary segment.
+6. Inspect `reload_context` and confirm only messages after the newest segment cursor remain unsummarized.
+7. Inspect `build_context` and confirm Grok receives the newest summary segments that fit the summary-context budget plus every unsummarized message.
 8. Check the **Biology Chat · LangGraph & Summarization** dashboard for matching branch, context, and reduction metrics.
 9. Restore the normal thresholds after the test.
 
@@ -138,7 +138,7 @@ Useful PostgreSQL inspection:
 docker compose exec db psql -U biology -d biology_chat -c "SELECT id, conversation_id, token_count, covered_until_message_id, created_at FROM conversation_summaries ORDER BY id DESC LIMIT 10;"
 ```
 
-The summary cursor must increase monotonically during ordinary chat. Editing an earlier message deliberately deletes summaries whose cursor covers that message.
+The newest summary-segment cursor must increase monotonically during ordinary chat. Editing an earlier message deliberately deletes that segment and every later segment.
 
 ## Grafana dashboards
 

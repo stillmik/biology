@@ -37,6 +37,7 @@ def initialize_database_from_db() -> None:
             db.rollback()
 
         db.execute("CREATE TABLE IF NOT EXISTS conversation_summaries (id BIGSERIAL PRIMARY KEY, conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, content TEXT NOT NULL, token_count INTEGER NOT NULL, covered_until_message_id BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+        db.execute("CREATE TABLE IF NOT EXISTS conversation_summary_segments (id BIGSERIAL PRIMARY KEY, conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, content TEXT NOT NULL, token_count INTEGER NOT NULL, covered_from_message_id BIGINT NOT NULL, covered_until_message_id BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, CHECK (covered_from_message_id <= covered_until_message_id), UNIQUE (conversation_id, covered_from_message_id, covered_until_message_id))")
         db.execute("INSERT INTO conversations (user_id, title) SELECT id, 'New conversation' FROM users WHERE NOT EXISTS (SELECT 1 FROM conversations WHERE conversations.user_id = users.id)")
         db.execute("UPDATE messages SET conversation_id = (SELECT id FROM conversations WHERE conversations.user_id = messages.user_id ORDER BY id LIMIT 1) WHERE conversation_id IS NULL")
 
@@ -120,6 +121,31 @@ def create_summary_from_db(conversation_id: int, content: str, token_count: int,
         return db.execute("INSERT INTO conversation_summaries (conversation_id, content, token_count, covered_until_message_id) VALUES (%s, %s, %s, %s) RETURNING id, conversation_id, content, token_count, covered_until_message_id, created_at", (conversation_id, content, token_count, covered_until_message_id)).fetchone()
 
 
+@observe_database_operation("get_latest_summary_segment_from_db")
+def get_latest_summary_segment_from_db(conversation_id: int) -> dict | None:
+    with open_database_connection_from_db() as db:
+        return db.execute("SELECT id, conversation_id, content, token_count, covered_from_message_id, covered_until_message_id, created_at FROM conversation_summary_segments WHERE conversation_id = %s ORDER BY covered_until_message_id DESC, id DESC LIMIT 1", (conversation_id,)).fetchone()
+
+
+@observe_database_operation("list_recent_summary_segments_within_token_budget_from_db")
+def list_recent_summary_segments_within_token_budget_from_db(conversation_id: int, token_budget: int) -> list[dict]:
+    with open_database_connection_from_db() as db:
+        newest_first = db.execute("SELECT id, conversation_id, content, token_count, covered_from_message_id, covered_until_message_id, created_at FROM conversation_summary_segments WHERE conversation_id = %s ORDER BY covered_until_message_id DESC, id DESC", (conversation_id,)).fetchall()
+    selected, used_tokens = [], 0
+    for segment in newest_first:
+        if used_tokens + segment["token_count"] > token_budget:
+            break
+        selected.append(segment)
+        used_tokens += segment["token_count"]
+    return list(reversed(selected))
+
+
+@observe_database_operation("create_summary_segment_from_db")
+def create_summary_segment_from_db(conversation_id: int, content: str, token_count: int, covered_from_message_id: int, covered_until_message_id: int) -> dict:
+    with open_database_connection_from_db() as db:
+        return db.execute("INSERT INTO conversation_summary_segments (conversation_id, content, token_count, covered_from_message_id, covered_until_message_id) VALUES (%s, %s, %s, %s, %s) RETURNING id, conversation_id, content, token_count, covered_from_message_id, covered_until_message_id, created_at", (conversation_id, content, token_count, covered_from_message_id, covered_until_message_id)).fetchone()
+
+
 @observe_database_operation("create_message_from_db")
 def create_message_from_db(user_id: int, conversation_id: int, role: str, content: str) -> None:
     with open_database_connection_from_db() as db:
@@ -152,8 +178,14 @@ def update_message_content_from_db(message_id: int, user_id: int, content: str) 
 @observe_database_operation("delete_message_from_db")
 def delete_message_from_db(message_id: int, user_id: int) -> bool:
     with open_database_connection_from_db() as db:
-        result = db.execute("DELETE FROM messages WHERE id = %s AND conversation_id IN (SELECT id FROM conversations WHERE user_id = %s)", (message_id, user_id))
-        return result.rowcount > 0
+        with db.transaction():
+            message = db.execute("SELECT m.conversation_id FROM messages AS m JOIN conversations AS c ON c.id = m.conversation_id WHERE m.id = %s AND c.user_id = %s FOR UPDATE", (message_id, user_id)).fetchone()
+            if not message:
+                return False
+            db.execute("DELETE FROM conversation_summary_segments WHERE conversation_id = %s AND covered_until_message_id >= %s", (message["conversation_id"], message_id))
+            db.execute("DELETE FROM messages WHERE id = %s", (message_id,))
+            db.execute("UPDATE conversations SET updated_at = NOW() WHERE id = %s", (message["conversation_id"],))
+            return True
 
 
 @observe_database_operation("delete_conversation_from_db")
@@ -181,8 +213,8 @@ def update_user_message_and_delete_following_from_db(message_id: int, user_id: i
     """
     Edit one user message and erase the conversation timeline after it.
 
-    Any rolling summary covering the edited message is invalidated because
-    it was generated from the old content.
+    Any summary segment covering the edited message is invalidated because it
+    was generated from the old content.
     """
 
     with open_database_connection_from_db() as db:
@@ -201,8 +233,7 @@ def update_user_message_and_delete_following_from_db(message_id: int, user_id: i
             # Delete every message after the edited point.
             db.execute("DELETE FROM messages WHERE conversation_id = %s AND id > %s", (conversation_id, message_id))
 
-            # Delete rolling summaries containing the edited message.
-            db.execute("DELETE FROM conversation_summaries WHERE conversation_id = %s AND covered_until_message_id >= %s", (conversation_id, message_id))
+            db.execute("DELETE FROM conversation_summary_segments WHERE conversation_id = %s AND covered_until_message_id >= %s", (conversation_id, message_id))
             db.execute("UPDATE conversations SET updated_at = NOW() WHERE id = %s", (conversation_id,))
 
     return updated_message
