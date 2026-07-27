@@ -9,7 +9,7 @@ from ...infrastructure.database import create_summary_segment_from_db
 from ...prompts import BIOLOGY_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT
 from ...schemas.chat import ChatState, ContextBudgetError
 from ...services.model_service import generate_model_response
-from ...utils.chat_context import estimate_context_tokens, estimate_message_tokens, estimate_tokens, truncate_to_tokens
+from ...utils.chat_context import estimate_context_tokens, estimate_message_tokens, estimate_tokens
 from .context import format_summary_segment, load_context_snapshot, select_messages_for_summary
 
 
@@ -74,7 +74,6 @@ def summarize_node(state: ChatState) -> dict:
         summary_request = f"MESSAGE RANGE {chunk[0]['id']}–{chunk[-1]['id']}:\n\n{transcript}\n\nReturn one standalone summary for only this message range."
         try:
             summary_content = generate_model_response([{"role": "system", "content": SUMMARY_SYSTEM_PROMPT}, {"role": "user", "content": summary_request}], model=XAI_SUMMARY_MODEL, max_output_tokens=SUMMARY_MAX_TOKENS, operation="summarization")
-            summary_content = truncate_to_tokens(summary_content, SUMMARY_MAX_TOKENS)
             summary_tokens = estimate_tokens(summary_content)
             token_reduction = max(0, chunk_tokens - summary_tokens)
             create_summary_segment_from_db(state["conversation_id"], summary_content, summary_tokens, chunk[0]["id"], chunk[-1]["id"])

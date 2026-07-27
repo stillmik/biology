@@ -10,7 +10,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from ..core.config import GENERATED_FILES_DIRECTORY, MAX_FILE_CONTENT_SIZE
+from ..core.config import GENERATED_FILES_DIRECTORY
 from ..infrastructure.database import create_generated_file_from_db
 
 
@@ -21,10 +21,6 @@ def select_generated_file_type(message: str) -> str:
 
 def strip_inline_markdown(value: str) -> str:
     return re.sub(r"(`+|\*{1,3}|_+)", "", value).strip()
-
-
-def truncate_generated_file_content(content: str, token_limit: int) -> str:
-    return content[: max(1, token_limit * 3)]
 
 
 def create_pdf_table(rows: list[list[str]], available_width: float, styles) -> Table:
@@ -65,12 +61,14 @@ def create_pdf_response_file(path: Path, content: str) -> None:
 def create_generated_response_file(user_id: int, conversation_id: int, message_id: int, request_message: str, response_content: str, output_directory: Path | None = None) -> dict[str, str]:
     file_type = select_generated_file_type(request_message)
     file_id = str(uuid.uuid4())
-    generated_content = truncate_generated_file_content(response_content, MAX_FILE_CONTENT_SIZE)
+
+    generated_content = response_content
     directory = output_directory or Path(GENERATED_FILES_DIRECTORY)
     directory.mkdir(parents=True, exist_ok=True)
     filename = f"biology-response-{file_id[:8]}.{file_type}"
     storage_name = f"{file_id}.{file_type}"
     path = directory / storage_name
+
     if file_type == "txt":
         path.write_text(generated_content, encoding="utf-8")
         mime_type = "text/plain"

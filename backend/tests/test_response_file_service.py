@@ -6,15 +6,10 @@ from unittest.mock import patch
 
 import pdfplumber
 
-from app.core.config import MAX_FILE_CONTENT_SIZE
-from app.services.response_file_service import create_generated_response_file, truncate_generated_file_content
+from app.services.response_file_service import create_generated_response_file
 
 
 class ResponseFileServiceTests(unittest.TestCase):
-    def test_truncates_file_content_to_configured_token_limit(self):
-        generated_content = truncate_generated_file_content("x" * 10000, MAX_FILE_CONTENT_SIZE)
-        self.assertLessEqual(max(1, (len(generated_content) + 2) // 3), MAX_FILE_CONTENT_SIZE)
-
     @patch("app.services.response_file_service.create_generated_file_from_db")
     def test_creates_pdf_with_markdown_table_by_default(self, create_file_record):
         create_file_record.side_effect = lambda file_id, _user_id, _conversation_id, _message_id, filename, mime_type, storage_name: {"id": file_id, "filename": filename, "mime_type": mime_type, "storage_name": storage_name}

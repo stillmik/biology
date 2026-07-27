@@ -6,7 +6,7 @@ import pdfplumber
 from fastapi import HTTPException, UploadFile
 
 from ..core.config import MAX_ATTACHED_FILE_BYTES, MAX_ATTACHED_FILE_LENGTH
-from ..utils.chat_context import truncate_to_tokens
+from ..utils.chat_context import estimate_tokens
 
 
 SUPPORTED_FILE_EXTENSIONS = {".txt", ".pdf"}
@@ -39,7 +39,9 @@ def extract_text_and_tables_from_pdf(file_bytes: bytes) -> str:
             for page_number, page in enumerate(pdf.pages, start=1):
                 page_parts = [normalize_extracted_text(page.extract_text() or "")]
                 page_parts.extend(convert_pdf_table_to_markdown(table) for table in page.extract_tables())
+
                 content = normalize_extracted_text("\n\n".join(part for part in page_parts if part))
+
                 if content:
                     extracted_parts.append(f"Page {page_number}:\n{content}")
     except Exception as error:
@@ -49,10 +51,13 @@ def extract_text_and_tables_from_pdf(file_bytes: bytes) -> str:
 
 def extract_text_from_uploaded_file(filename: str, content_type: str | None, file_bytes: bytes) -> str:
     extension = get_file_extension(filename)
+
     if extension not in SUPPORTED_FILE_EXTENSIONS or content_type not in SUPPORTED_CONTENT_TYPES | {None, "", "application/octet-stream"}:
         raise HTTPException(status_code=415, detail="Only TXT and PDF files are supported")
+
     if len(file_bytes) > MAX_ATTACHED_FILE_BYTES:
         raise HTTPException(status_code=413, detail=f"Attached file cannot exceed {MAX_ATTACHED_FILE_BYTES // (1024 * 1024)} MB")
+
     if extension == ".txt":
         try:
             extracted_text = file_bytes.decode("utf-8")
@@ -61,9 +66,12 @@ def extract_text_from_uploaded_file(filename: str, content_type: str | None, fil
     else:
         extracted_text = extract_text_and_tables_from_pdf(file_bytes)
     extracted_text = normalize_extracted_text(extracted_text)
+
     if not extracted_text:
         raise HTTPException(status_code=422, detail="The attached file contains no readable text or tables")
-    return truncate_to_tokens(extracted_text, MAX_ATTACHED_FILE_LENGTH)
+    if estimate_tokens(extracted_text) > MAX_ATTACHED_FILE_LENGTH:
+        raise HTTPException(status_code=413, detail=f"Attached file text cannot exceed approximately {MAX_ATTACHED_FILE_LENGTH} tokens")
+    return extracted_text
 
 
 async def create_message_with_uploaded_file(message: str, uploaded_file: UploadFile) -> str:
