@@ -233,11 +233,21 @@ def get_message_for_user_from_db(message_id: int, user_id: int) -> dict | None:
 @observe_database_operation("update_message_content_from_db")
 def update_message_content_from_db(message_id: int, user_id: int, content: str) -> dict | None:
     with open_database_connection_from_db() as db:
-        message = db.execute("SELECT conversation_id FROM messages WHERE id = %s AND conversation_id IN (SELECT id FROM conversations WHERE user_id = %s)", (message_id, user_id)).fetchone()
-        if not message:
-            return None
-        db.execute("DELETE FROM messages WHERE conversation_id = %s AND id > %s", (message["conversation_id"], message_id))
-        return db.execute("UPDATE messages SET content = %s WHERE id = %s RETURNING id, conversation_id, role, content, created_at", (content, message_id)).fetchone()
+        with db.transaction():
+            message = db.execute("SELECT conversation_id FROM messages WHERE id = %s AND conversation_id IN (SELECT id FROM conversations WHERE user_id = %s) FOR UPDATE", (message_id, user_id)).fetchone()
+            if not message:
+                return None
+            db.execute("DELETE FROM messages WHERE conversation_id = %s AND id > %s", (message["conversation_id"], message_id))
+            invalidate_memories_after_message_from_db(db, message["conversation_id"], message_id)
+            return db.execute("UPDATE messages SET content = %s WHERE id = %s RETURNING id, conversation_id, role, content, created_at", (content, message_id)).fetchone()
+
+
+def invalidate_memories_after_message_from_db(db, conversation_id: int, message_id: int) -> dict[str, int]:
+    """Remove every persisted memory that may contain an edited or deleted message."""
+    segments_deleted = db.execute("DELETE FROM conversation_summary_segments WHERE conversation_id = %s AND covered_until_message_id >= %s", (conversation_id, message_id)).rowcount
+    summaries_deleted = db.execute("DELETE FROM conversation_summaries WHERE conversation_id = %s AND covered_until_message_id >= %s", (conversation_id, message_id)).rowcount
+    jobs_cancelled = db.execute("UPDATE summary_jobs SET status = 'cancelled', completed_at = NOW(), updated_at = NOW() WHERE conversation_id = %s AND status = 'queued'", (conversation_id,)).rowcount
+    return {"segments_deleted": segments_deleted, "summaries_deleted": summaries_deleted, "jobs_cancelled": jobs_cancelled}
 
 
 @observe_database_operation("delete_message_from_db")
@@ -247,8 +257,7 @@ def delete_message_from_db(message_id: int, user_id: int) -> bool:
             message = db.execute("SELECT m.conversation_id FROM messages AS m JOIN conversations AS c ON c.id = m.conversation_id WHERE m.id = %s AND c.user_id = %s FOR UPDATE", (message_id, user_id)).fetchone()
             if not message:
                 return False
-            db.execute("DELETE FROM conversation_summary_segments WHERE conversation_id = %s AND covered_until_message_id >= %s", (message["conversation_id"], message_id))
-            db.execute("UPDATE summary_jobs SET status = 'cancelled', completed_at = NOW(), updated_at = NOW() WHERE conversation_id = %s AND status = 'queued'", (message["conversation_id"],))
+            invalidate_memories_after_message_from_db(db, message["conversation_id"], message_id)
             db.execute("DELETE FROM messages WHERE id = %s", (message_id,))
             db.execute("UPDATE conversations SET updated_at = NOW() WHERE id = %s", (message["conversation_id"],))
             return True
@@ -279,8 +288,8 @@ def update_user_message_and_delete_following_from_db(message_id: int, user_id: i
     """
     Edit one user message and erase the conversation timeline after it.
 
-    Any summary segment covering the edited message is invalidated because it
-    was generated from the old content.
+    Every memory whose coverage reaches the edited message is invalidated, so
+    the regenerated answer can only use memories from before the edit.
     """
 
     with open_database_connection_from_db() as db:
@@ -299,10 +308,10 @@ def update_user_message_and_delete_following_from_db(message_id: int, user_id: i
             # Delete every message after the edited point.
             db.execute("DELETE FROM messages WHERE conversation_id = %s AND id > %s", (conversation_id, message_id))
 
-            db.execute("DELETE FROM conversation_summary_segments WHERE conversation_id = %s AND covered_until_message_id >= %s", (conversation_id, message_id))
-            db.execute("UPDATE summary_jobs SET status = 'cancelled', completed_at = NOW(), updated_at = NOW() WHERE conversation_id = %s AND status = 'queued'", (conversation_id,))
+            invalidation = invalidate_memories_after_message_from_db(db, conversation_id, message_id)
             db.execute("UPDATE conversations SET updated_at = NOW() WHERE id = %s", (conversation_id,))
 
+    log_event(logging.getLogger(__name__), logging.INFO, "conversation_memories_invalidated", conversation_id=conversation_id, edited_message_id=message_id, **invalidation)
     return updated_message
 
 
