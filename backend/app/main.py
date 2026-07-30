@@ -14,7 +14,7 @@ from .core.clients import close_xai_client, set_xai_client
 from .core.config import APP_VERSION, MAX_CONTEXT_TOKENS, SUMMARY_TRIGGER_TOKENS, XAI_MODEL, XAI_SUMMARY_MODEL
 from .core.observability import RequestObservabilityMiddleware, configure_logging, langsmith_tracing_extra, log_event, metrics_response
 from .infrastructure.database import initialize_database_from_db
-from .routers import chat, conversations, files, messages, users
+from .routers import chat, conversations, documents, files, messages, users
 
 
 load_dotenv()
@@ -56,6 +56,7 @@ app.include_router(conversations.router)
 app.include_router(chat.router)
 app.include_router(files.router)
 app.include_router(messages.router)
+app.include_router(documents.router)
 
 
 @app.get("/health")

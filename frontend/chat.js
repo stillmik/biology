@@ -9,8 +9,13 @@ const fileInput = document.querySelector("#file-input");
 const generateFileToggle = document.querySelector("#generate-file-toggle");
 const attachmentStatus = document.querySelector("#attachment-status");
 const conversationList = document.querySelector("#conversations");
+const documentLibrary = document.querySelector("#document-library");
+const activeDocuments = document.querySelector("#active-documents");
+const sendButton = document.querySelector("#send-button");
 let activeConversation = null;
 let generateFile = false;
+let unresolvedAnswerJobId = null;
+let activeDocumentRecords = [];
 document.querySelector("#username").textContent = user ? `@${user.username}` : "";
 
 fileInput.addEventListener("change", () => { const file = fileInput.files[0]; attachmentStatus.textContent = file ? `Attached: ${file.name}` : ""; });
@@ -40,6 +45,13 @@ function addGeneratedFileLink(group, generatedFile) {
 }
 
 function getUserDisplayContent(content) {
+  const pdfMarker = "\n\n[Attached PDF: ";
+  const pdfMarkerIndex = content.indexOf(pdfMarker);
+  if (pdfMarkerIndex >= 0) {
+    const pdfMarkerEnd = content.indexOf(" | document:", pdfMarkerIndex);
+    const pdfFilename = pdfMarkerEnd < 0 ? "PDF document" : content.slice(pdfMarkerIndex + pdfMarker.length, pdfMarkerEnd);
+    return `${content.slice(0, pdfMarkerIndex)}\n\n📎 ${pdfFilename}`;
+  }
   const attachmentMarker = "\n\n[Attached file: ";
   const markerIndex = content.indexOf(attachmentMarker);
   if (markerIndex < 0) return content;
@@ -62,7 +74,7 @@ function renderAssistantText(element, text) {
     output.push(`<ul>${listItems.join("")}</ul>`);
     listItems = [];
   };
-  const inline = (value) => escapeHtml(value).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "<em>$1</em>").replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  const inline = (value) => escapeHtml(value).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "<em>$1</em>").replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\[([^\]]+)\]\(((?:https?:\/\/|\/)[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   while (index < lines.length) {
     if (lines[index].trim().startsWith("|") && index + 1 < lines.length && /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(lines[index + 1])) {
       const headers = lines[index].split("|").slice(1, -1).map((cell) => `<th>${inline(cell.trim())}</th>`).join("");
@@ -261,6 +273,125 @@ function renderConversations(conversations) {
   });
 }
 
+async function attachLibraryDocument(documentId) {
+  if (!activeConversation) return;
+  const response = await fetch(`/api/conversations/${activeConversation.id}/documents/${encodeURIComponent(documentId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: user.id }),
+  });
+  if (!response.ok) throw new Error("Could not attach the PDF.");
+  await loadDocumentLibrary();
+  await loadActiveDocuments();
+}
+
+async function detachLibraryDocument(documentId) {
+  if (!activeConversation) return;
+  const response = await fetch(`/api/conversations/${activeConversation.id}/documents/${encodeURIComponent(documentId)}?user_id=${user.id}`, { method: "DELETE" });
+  if (!response.ok) throw new Error("Could not detach the PDF.");
+  await loadDocumentLibrary();
+  await loadActiveDocuments();
+}
+
+function renderDocumentLibrary(documents) {
+  documentLibrary.replaceChildren();
+  const activeDocumentIds = new Set(activeDocumentRecords.map((documentRecord) => documentRecord.id));
+  documents.forEach((documentRecord) => {
+    const row = document.createElement("div");
+    row.className = "document-row";
+    const identity = document.createElement("div");
+    const name = document.createElement("div");
+    name.className = "document-name";
+    name.textContent = documentRecord.filename;
+    name.title = documentRecord.filename;
+    const metadata = document.createElement("div");
+    metadata.className = `document-meta ${documentRecord.status !== "ready" ? "document-progress" : ""}`;
+    metadata.textContent = documentRecord.status === "ready" ? `${documentRecord.analysis_mode} · ${documentRecord.page_count || 0} pages` : `${documentRecord.status} · ${documentRecord.progress_percent}%`;
+    identity.append(name, metadata);
+    const action = document.createElement("button");
+    action.className = "document-action";
+    const isActive = activeDocumentIds.has(documentRecord.id);
+    action.textContent = isActive ? "Detach" : "Attach";
+    action.addEventListener("click", () => (isActive ? detachLibraryDocument(documentRecord.id) : attachLibraryDocument(documentRecord.id)).catch((error) => { status.textContent = error.message; }));
+    row.append(identity, action);
+    documentLibrary.appendChild(row);
+  });
+}
+
+async function loadDocumentLibrary() {
+  const response = await fetch(`/api/users/${user.id}/documents`);
+  if (!response.ok) throw new Error("Could not load the PDF library.");
+  const payload = await response.json();
+  renderDocumentLibrary(payload.documents);
+  return payload.documents;
+}
+
+function renderActiveDocuments() {
+  activeDocuments.replaceChildren();
+  activeDocumentRecords.forEach((documentRecord) => {
+    const chip = document.createElement("span");
+    chip.className = "document-chip";
+    const label = document.createElement("span");
+    const progress = documentRecord.status === "ready" ? "" : ` · ${documentRecord.progress_percent}%`;
+    label.textContent = `${documentRecord.filename}${progress}`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "×";
+    remove.title = "Detach PDF";
+    remove.addEventListener("click", () => detachLibraryDocument(documentRecord.id).catch((error) => { status.textContent = error.message; }));
+    chip.append(label, remove);
+    activeDocuments.appendChild(chip);
+  });
+}
+
+async function loadActiveDocuments() {
+  if (!activeConversation) {
+    activeDocumentRecords = [];
+    renderActiveDocuments();
+    return [];
+  }
+  const response = await fetch(`/api/conversations/${activeConversation.id}/documents?user_id=${user.id}`);
+  if (!response.ok) throw new Error("Could not load attached PDFs.");
+  const payload = await response.json();
+  activeDocumentRecords = payload.documents;
+  renderActiveDocuments();
+  return activeDocumentRecords;
+}
+
+function setComposerBusy(isBusy) {
+  input.disabled = isBusy;
+  sendButton.disabled = isBusy;
+  fileInput.disabled = isBusy;
+}
+
+function waitForNextPoll() {
+  return new Promise((resolve) => window.setTimeout(resolve, 1200));
+}
+
+async function waitForAnswerJob(answerJobId) {
+  unresolvedAnswerJobId = answerJobId;
+  setComposerBusy(true);
+  while (unresolvedAnswerJobId === answerJobId) {
+    const response = await fetch(`/api/answer-jobs/${answerJobId}?user_id=${user.id}`);
+    if (!response.ok) throw new Error("Could not check the document answer.");
+    const answerJob = await response.json();
+    await loadActiveDocuments();
+    await loadDocumentLibrary();
+    const processingDocument = activeDocumentRecords.find((documentRecord) => documentRecord.status !== "ready");
+    status.textContent = processingDocument ? `Analyzing ${processingDocument.filename} · ${processingDocument.progress_percent}%` : "Preparing a grounded answer...";
+    if (answerJob.status === "completed") {
+      unresolvedAnswerJobId = null;
+      await selectConversation(activeConversation);
+      return;
+    }
+    if (["failed", "cancelled"].includes(answerJob.status)) {
+      unresolvedAnswerJobId = null;
+      throw new Error(answerJob.last_error || "The document answer could not be completed.");
+    }
+    await waitForNextPoll();
+  }
+}
+
 async function loadConversations() {
   const response = await fetch(`/api/users/${user.id}/conversations`);
   if (!response.ok) throw new Error("Could not load conversations.");
@@ -293,11 +424,13 @@ async function selectConversation(conversation) {
   messages.replaceChildren();
   if (!history.length) addMessage("Ask anything — this chat will keep its own history ✨", "assistant");
   history.forEach(addStoredMessage);
+  await loadActiveDocuments();
+  await loadDocumentLibrary();
   const conversations = await fetch(`/api/users/${user.id}/conversations`).then((result) => result.json());
   renderConversations(conversations);
 }
 
-async function readTokenStream(response, onToken, onFile = () => {}) {
+async function readTokenStream(response, onToken, onFile = () => {}, onAnswerJob = () => {}, onDocument = () => {}) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -316,11 +449,14 @@ async function readTokenStream(response, onToken, onFile = () => {}) {
       if (data.error) throw new Error(data.error);
       if (data.token) onToken(data.token);
       if (data.file) onFile(data.file);
+      if (data.answer_job) onAnswerJob(data.answer_job);
+      if (data.document) onDocument(data.document);
     }
   }
 }
 
 document.querySelector("#new-chat").addEventListener("click", () => createConversation().catch((error) => { status.textContent = error.message; }));
+document.querySelector("#refresh-documents").addEventListener("click", () => Promise.all([loadDocumentLibrary(), loadActiveDocuments()]).catch((error) => { status.textContent = error.message; }));
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -346,11 +482,21 @@ form.addEventListener("submit", async (event) => {
     }
     let assistantBubble = null;
     let reply = "";
-    await readTokenStream(response, (token) => { reply += token; if (!assistantBubble) assistantBubble = addMessage("", "assistant"); renderAssistantText(assistantBubble, reply); messages.scrollTop = messages.scrollHeight; }, (generatedFile) => { if (!assistantBubble) assistantBubble = addMessage("", "assistant"); addGeneratedFileLink(assistantBubble.closest(".message-group"), generatedFile); });
-    await selectConversation(activeConversation);
+    let queuedAnswerJob = null;
+    await readTokenStream(
+      response,
+      (token) => { reply += token; if (!assistantBubble) assistantBubble = addMessage("", "assistant"); renderAssistantText(assistantBubble, reply); messages.scrollTop = messages.scrollHeight; },
+      (generatedFile) => { if (!assistantBubble) assistantBubble = addMessage("", "assistant"); addGeneratedFileLink(assistantBubble.closest(".message-group"), generatedFile); },
+      (answerJob) => { queuedAnswerJob = answerJob; },
+      () => { status.textContent = "PDF saved. Starting analysis..."; },
+    );
+    if (queuedAnswerJob) await waitForAnswerJob(queuedAnswerJob.id);
+    else await selectConversation(activeConversation);
   } catch (error) {
     addMessage(error.message, "assistant");
   } finally {
+    unresolvedAnswerJobId = null;
+    setComposerBusy(false);
     status.textContent = "";
     input.focus();
   }

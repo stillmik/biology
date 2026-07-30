@@ -4,13 +4,46 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Chat · Biology Chat</title>
-    <link rel="stylesheet" href="styles.css?v=8" />
+    <link rel="stylesheet" href="styles.css?v=10" />
   </head>
   <body>
     <main class="app-shell">
-      <aside class="sidebar"><div class="sidebar-heading"><strong>Chats</strong><button id="new-chat" type="button">+</button></div><div id="conversations" class="conversation-list"></div><a class="switch-user" href="/register.html">Switch user</a></aside>
-      <section class="shell"><div class="chat-topbar"><span id="username"></span><span id="chat-title"></span></div><section id="messages" class="messages" aria-live="polite"></section><form id="chat-form" class="composer"><div class="message-input-wrap"><label class="sr-only" for="message-input">Your message</label><textarea id="message-input" rows="2" maxlength="690" placeholder="Write a message..." required></textarea><button id="generate-file-toggle" class="generate-file-toggle" type="button" title="Generate a PDF response file" aria-label="Generate a PDF response file" aria-pressed="false">📄</button><label class="file-upload" title="Attach TXT or PDF"><input id="file-input" type="file" accept=".txt,.pdf,text/plain,application/pdf"><span>+</span></label></div><button type="submit">Send</button></form><p id="attachment-status" class="attachment-status"></p><p id="status" class="status" role="status"></p></section>
+      <aside class="sidebar">
+        <div class="sidebar-heading">
+          <strong>Chats</strong>
+          <button id="new-chat" type="button">+</button>
+        </div>
+        <div id="conversations" class="conversation-list"></div>
+        <div class="sidebar-heading document-heading">
+          <strong>PDF library</strong>
+          <button id="refresh-documents" type="button" title="Refresh documents">↻</button>
+        </div>
+        <div id="document-library" class="document-library"></div>
+        <a class="switch-user" href="/register.html">Switch user</a>
+      </aside>
+      <section class="shell">
+        <div class="chat-topbar">
+          <span id="username"></span>
+          <span id="chat-title"></span>
+        </div>
+        <div id="active-documents" class="active-documents" aria-live="polite"></div>
+        <section id="messages" class="messages" aria-live="polite"></section>
+        <form id="chat-form" class="composer">
+          <div class="message-input-wrap">
+            <label class="sr-only" for="message-input">Your message</label>
+            <textarea id="message-input" rows="2" maxlength="690" placeholder="Write a message..." required></textarea>
+            <button id="generate-file-toggle" class="generate-file-toggle" type="button" title="Generate a PDF response file" aria-label="Generate a PDF response file" aria-pressed="false">📄</button>
+            <label class="file-upload" title="Attach TXT or PDF">
+              <input id="file-input" type="file" accept=".txt,.pdf,text/plain,application/pdf">
+              <span>+</span>
+            </label>
+          </div>
+          <button id="send-button" type="submit">Send</button>
+        </form>
+        <p id="attachment-status" class="attachment-status"></p>
+        <p id="status" class="status" role="status"></p>
+      </section>
     </main>
-    <script src="chat.js?v=9"></script>
+    <script src="chat.js?v=11"></script>
   </body>
 </html>

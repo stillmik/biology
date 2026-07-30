@@ -10,6 +10,7 @@ import psycopg
 from psycopg.errors import DuplicateColumn
 from psycopg.rows import dict_row
 from ..core.observability import DB_CONNECTION_FAILURES, DB_LOCK_WAIT_DURATION, log_event, observe_database_operation
+from .document_schema import initialize_document_schema
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://biology:biology@db:5432/biology_chat")
@@ -47,6 +48,7 @@ def initialize_database_from_db() -> None:
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS summary_jobs_one_active_per_conversation ON summary_jobs (conversation_id) WHERE status IN ('queued', 'running')")
         db.execute("INSERT INTO conversations (user_id, title) SELECT id, 'New conversation' FROM users WHERE NOT EXISTS (SELECT 1 FROM conversations WHERE conversations.user_id = users.id)")
         db.execute("UPDATE messages SET conversation_id = (SELECT id FROM conversations WHERE conversations.user_id = messages.user_id ORDER BY id LIMIT 1) WHERE conversation_id IS NULL")
+        initialize_document_schema(db)
 
 
 @observe_database_operation("create_user_from_db")

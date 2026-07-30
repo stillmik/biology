@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:17-alpine
+    image: pgvector/pgvector:pg17
     container_name: biology-chat-db
     environment:
       POSTGRES_DB: biology_chat
@@ -39,6 +39,8 @@ services:
       - "127.0.0.1:18000:8000"
     volumes:
       - biology_generated_files:/app/generated_files
+      - biology_uploaded_documents:/app/uploaded_documents
+      - biology_embedding_cache:/app/model_cache
     labels:
       logging: "alloy"
       service: "backend"
@@ -91,6 +93,44 @@ services:
       options:
         max-size: "20m"
         max-file: "5"
+    restart: unless-stopped
+
+  document-worker:
+    build:
+      context: ./backend
+    container_name: biology-chat-document-worker
+    command: ["python", "-m", "app.workers.document_worker"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: postgresql://biology:biology@db:5432/biology_chat
+      SERVICE_NAME: biology-chat-document-worker
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - biology_uploaded_documents:/app/uploaded_documents
+      - biology_embedding_cache:/app/model_cache
+    restart: unless-stopped
+
+  answer-worker:
+    build:
+      context: ./backend
+    container_name: biology-chat-answer-worker
+    command: ["python", "-m", "app.workers.answer_worker"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: postgresql://biology:biology@db:5432/biology_chat
+      SERVICE_NAME: biology-chat-answer-worker
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - biology_uploaded_documents:/app/uploaded_documents
+      - biology_embedding_cache:/app/model_cache
     restart: unless-stopped
 
   prometheus:
@@ -186,3 +226,5 @@ volumes:
   biology_alloy_data:
   biology_grafana_data:
   biology_generated_files:
+  biology_uploaded_documents:
+  biology_embedding_cache:
