@@ -13,9 +13,8 @@ from openai import OpenAI
 from .core.clients import close_xai_client, set_xai_client
 from .core.config import APP_VERSION, MAX_CONTEXT_TOKENS, SUMMARY_TRIGGER_TOKENS, XAI_MODEL, XAI_SUMMARY_MODEL
 from .core.observability import RequestObservabilityMiddleware, configure_logging, langsmith_tracing_extra, log_event, metrics_response
-from .infrastructure.database import initialize_database_from_db
+from .infrastructure.database import initialize_database
 from .routers import chat, conversations, documents, files, messages, users
-
 
 load_dotenv()
 configure_logging()
@@ -30,7 +29,7 @@ async def lifespan(_: FastAPI):
         raise RuntimeError("XAI_API_KEY is not configured")
 
     log_event(logger, logging.INFO, "application_starting", model=XAI_MODEL, summary_model=XAI_SUMMARY_MODEL, summary_trigger_tokens=SUMMARY_TRIGGER_TOKENS, max_context_tokens=MAX_CONTEXT_TOKENS)
-    initialize_database_from_db()
+    initialize_database()
     log_event(logger, logging.INFO, "database_ready")
     set_xai_client(wrap_openai(OpenAI(api_key=api_key, base_url="https://api.x.ai/v1"), tracing_extra=langsmith_tracing_extra()))
     log_event(logger, logging.INFO, "application_ready")

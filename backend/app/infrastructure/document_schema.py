@@ -1,10 +1,13 @@
 from ..core.config import DOCUMENT_EMBEDDING_DIMENSIONS
 
 
-def initialize_document_schema(database_connection) -> None:
-    embedding_dimensions = int(DOCUMENT_EMBEDDING_DIMENSIONS)
-    database_connection.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    database_connection.execute(
+def execute_schema_statements(database_connection, statements: tuple[str, ...]) -> None:
+    for statement in statements:
+        database_connection.execute(statement)
+
+
+def create_document_tables(database_connection, embedding_dimensions: int) -> None:
+    table_statements = (
         """
         CREATE TABLE IF NOT EXISTS documents (
             id TEXT PRIMARY KEY,
@@ -27,9 +30,7 @@ def initialize_document_schema(database_connection) -> None:
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (user_id, checksum_sha256, analysis_version)
         )
-        """
-    )
-    database_connection.execute(
+        """,
         """
         CREATE TABLE IF NOT EXISTS conversation_documents (
             conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -37,18 +38,14 @@ def initialize_document_schema(database_connection) -> None:
             attached_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (conversation_id, document_id)
         )
-        """
-    )
-    database_connection.execute(
+        """,
         """
         CREATE TABLE IF NOT EXISTS message_documents (
             message_id BIGINT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
             document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
             PRIMARY KEY (message_id, document_id)
         )
-        """
-    )
-    database_connection.execute(
+        """,
         """
         CREATE TABLE IF NOT EXISTS document_pages (
             id BIGSERIAL PRIMARY KEY,
@@ -60,9 +57,7 @@ def initialize_document_schema(database_connection) -> None:
             extraction_warnings JSONB NOT NULL DEFAULT '[]'::jsonb,
             UNIQUE (document_id, page_number)
         )
-        """
-    )
-    database_connection.execute(
+        """,
         """
         CREATE TABLE IF NOT EXISTS document_tables (
             id BIGSERIAL PRIMARY KEY,
@@ -74,17 +69,16 @@ def initialize_document_schema(database_connection) -> None:
             token_count INTEGER NOT NULL,
             UNIQUE (document_id, page_number, table_number)
         )
-        """
-    )
-    database_connection.execute(
+        """,
         f"""
         CREATE TABLE IF NOT EXISTS document_nodes (
             id BIGSERIAL PRIMARY KEY,
             document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
             parent_id BIGINT REFERENCES document_nodes(id) ON DELETE SET NULL,
             node_type TEXT NOT NULL
-                CHECK (node_type IN ('evidence', 'table', 'packet', 'section', 'major', 'root')),
+                CHECK (node_type IN ('evidence', 'table', 'packet', 'section', 'major', 'overview', 'small', 'medium', 'large', 'extralarge', 'root')),
             hierarchy_level INTEGER NOT NULL,
+            source_table_id BIGINT REFERENCES document_tables(id) ON DELETE CASCADE,
             title TEXT NOT NULL DEFAULT '',
             content TEXT NOT NULL,
             page_start INTEGER NOT NULL,
@@ -97,18 +91,14 @@ def initialize_document_schema(database_connection) -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             CHECK (page_start <= page_end)
         )
-        """
-    )
-    database_connection.execute(
+        """,
         """
         CREATE TABLE IF NOT EXISTS document_node_sources (
             summary_node_id BIGINT NOT NULL REFERENCES document_nodes(id) ON DELETE CASCADE,
             source_node_id BIGINT NOT NULL REFERENCES document_nodes(id) ON DELETE CASCADE,
             PRIMARY KEY (summary_node_id, source_node_id)
         )
-        """
-    )
-    database_connection.execute(
+        """,
         """
         CREATE TABLE IF NOT EXISTS document_analysis_jobs (
             id BIGSERIAL PRIMARY KEY,
@@ -125,9 +115,7 @@ def initialize_document_schema(database_connection) -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
-        """
-    )
-    database_connection.execute(
+        """,
         """
         CREATE TABLE IF NOT EXISTS answer_jobs (
             id BIGSERIAL PRIMARY KEY,
@@ -136,6 +124,7 @@ def initialize_document_schema(database_connection) -> None:
             user_message_id BIGINT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
             assistant_message_id BIGINT REFERENCES messages(id) ON DELETE SET NULL,
             question TEXT NOT NULL,
+            answer_depth TEXT CHECK (answer_depth IN ('overview', 'section', 'focused', 'evidence')),
             status TEXT NOT NULL DEFAULT 'queued'
                 CHECK (status IN ('queued', 'waiting_for_documents', 'running', 'completed', 'failed', 'cancelled', 'retrying')),
             attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -147,40 +136,55 @@ def initialize_document_schema(database_connection) -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
-        """
-    )
-    database_connection.execute(
+        """,
         """
         CREATE TABLE IF NOT EXISTS answer_job_documents (
             answer_job_id BIGINT NOT NULL REFERENCES answer_jobs(id) ON DELETE CASCADE,
             document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
             PRIMARY KEY (answer_job_id, document_id)
         )
-        """
-    )
-    database_connection.execute(
+        """,
         """
         CREATE TABLE IF NOT EXISTS answer_evidence (
             assistant_message_id BIGINT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-            document_node_id BIGINT NOT NULL REFERENCES document_nodes(id) ON DELETE CASCADE,
+            source_id BIGINT NOT NULL REFERENCES document_nodes(id) ON DELETE CASCADE,
             rank INTEGER NOT NULL,
-            PRIMARY KEY (assistant_message_id, document_node_id)
+            PRIMARY KEY (assistant_message_id, source_id)
         )
-        """
+        """,
     )
-    database_connection.execute("CREATE INDEX IF NOT EXISTS documents_owner_status_index ON documents (user_id, status, updated_at DESC)")
-    database_connection.execute("CREATE INDEX IF NOT EXISTS conversation_documents_document_index ON conversation_documents (document_id)")
-    database_connection.execute("CREATE INDEX IF NOT EXISTS document_pages_lookup_index ON document_pages (document_id, page_number)")
-    database_connection.execute("CREATE INDEX IF NOT EXISTS document_tables_lookup_index ON document_tables (document_id, page_number)")
-    database_connection.execute("CREATE INDEX IF NOT EXISTS document_nodes_scope_index ON document_nodes (document_id, node_type, page_start, page_end)")
-    database_connection.execute("CREATE INDEX IF NOT EXISTS document_nodes_search_index ON document_nodes USING GIN (search_vector)")
-    database_connection.execute("CREATE INDEX IF NOT EXISTS document_nodes_embedding_index ON document_nodes USING hnsw (embedding vector_cosine_ops)")
-    database_connection.execute("CREATE INDEX IF NOT EXISTS document_analysis_jobs_ready_index ON document_analysis_jobs (status, available_at, id)")
-    database_connection.execute("CREATE INDEX IF NOT EXISTS answer_jobs_ready_index ON answer_jobs (status, available_at, id)")
-    database_connection.execute(
+    execute_schema_statements(database_connection, table_statements)
+
+
+def apply_document_schema_migrations(database_connection) -> None:
+    migration_statements = ("DO $$ BEGIN IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'answer_evidence' AND column_name = 'document_node_id') AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'answer_evidence' AND column_name = 'source_id') THEN ALTER TABLE answer_evidence RENAME COLUMN document_node_id TO source_id; END IF; END $$", "ALTER TABLE document_nodes ADD COLUMN IF NOT EXISTS source_table_id BIGINT REFERENCES document_tables(id) ON DELETE CASCADE", "ALTER TABLE document_nodes DROP CONSTRAINT IF EXISTS document_nodes_node_type_check", "ALTER TABLE document_nodes ADD CONSTRAINT document_nodes_node_type_check CHECK (node_type IN ('evidence', 'table', 'packet', 'section', 'major', 'overview', 'small', 'medium', 'large', 'extralarge', 'root'))", "ALTER TABLE answer_jobs ADD COLUMN IF NOT EXISTS answer_depth TEXT CHECK (answer_depth IN ('overview', 'section', 'focused', 'evidence'))", "DROP INDEX IF EXISTS document_summary_nodes_scope_unique")
+    execute_schema_statements(database_connection, migration_statements)
+
+
+def create_document_indexes(database_connection) -> None:
+    index_statements = (
+        "CREATE INDEX IF NOT EXISTS documents_owner_status_index ON documents (user_id, status, updated_at DESC)",
+        "CREATE INDEX IF NOT EXISTS conversation_documents_document_index ON conversation_documents (document_id)",
+        "CREATE INDEX IF NOT EXISTS document_pages_lookup_index ON document_pages (document_id, page_number)",
+        "CREATE INDEX IF NOT EXISTS document_tables_lookup_index ON document_tables (document_id, page_number)",
+        "CREATE INDEX IF NOT EXISTS document_nodes_scope_index ON document_nodes (document_id, node_type, page_start, page_end)",
+        "CREATE INDEX IF NOT EXISTS document_nodes_source_table_index ON document_nodes (source_table_id) WHERE source_table_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS document_nodes_search_index ON document_nodes USING GIN (search_vector)",
+        "CREATE INDEX IF NOT EXISTS document_nodes_embedding_index ON document_nodes USING hnsw (embedding vector_cosine_ops)",
+        "CREATE INDEX IF NOT EXISTS document_analysis_jobs_ready_index ON document_analysis_jobs (status, available_at, id)",
+        "CREATE INDEX IF NOT EXISTS answer_jobs_ready_index ON answer_jobs (status, available_at, id)",
         """
         CREATE UNIQUE INDEX IF NOT EXISTS answer_jobs_one_unresolved_per_conversation
         ON answer_jobs (conversation_id)
         WHERE status IN ('queued', 'waiting_for_documents', 'running', 'retrying')
-        """
+        """,
     )
+    execute_schema_statements(database_connection, index_statements)
+
+
+def initialize_document_schema(database_connection) -> None:
+    embedding_dimensions = int(DOCUMENT_EMBEDDING_DIMENSIONS)
+    database_connection.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    create_document_tables(database_connection, embedding_dimensions)
+    apply_document_schema_migrations(database_connection)
+    create_document_indexes(database_connection)

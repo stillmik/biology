@@ -5,25 +5,12 @@ from reportlab.pdfgen import canvas
 from unittest.mock import patch
 
 from app.core import config
-from app.services.document_chunking_service import (
-    create_document_evidence_chunks,
-    split_markdown_table_into_chunks,
-    split_text_into_word_chunks,
-)
+from app.services.document_chunking_service import create_document_evidence_chunks, create_table_document_evidence_chunks, split_markdown_table_into_chunks, split_text_into_document_evidence_chunks
 from app.services.document_citation_service import validate_and_link_citations
 from app.services.document_extraction_service import extract_structured_pdf
-from app.services.document_retrieval_service import (
-    classify_answer_depth,
-    diversify_ranked_nodes,
-    reciprocal_rank_fusion,
-)
-from app.services.document_hierarchy_service import (
-    StoredHierarchyNode,
-    build_deep_document_hierarchy,
-    create_stored_summary_node,
-    partition_nodes_by_input_budget,
-)
-from app.workflows.document_analysis.nodes import choose_analysis_route
+from app.services.document_retrieval_service import classify_answer_depth, diversify_ranked_nodes, increase_answer_depth, reciprocal_rank_fusion
+from app.services.document_hierarchy_service import DocumentEvidenceChunkMeta, build_hierarchy_level, build_deep_document_hierarchy, create_stored_summary_node, partition_nodes_by_input_budget
+from app.workflows.document_analysis.nodes import choose_analysis_route, choose_resume_route, verify_document_node
 
 
 def create_single_line_pdf(character_count: int, page_count: int = 1) -> bytes:
@@ -47,29 +34,15 @@ def create_table_pdf() -> bytes:
     top = 700
     column_width = 140
     row_height = 24
-    rows = [
-        ["Condition", "Measured value"],
-        ["Frozen <= -20 C", "4.5 mg/mL"],
-        ["Refrigerated 2-8 C", "3.9 mg/mL*"],
-    ]
+    rows = [["Condition", "Measured value"], ["Frozen <= -20 C", "4.5 mg/mL"], ["Refrigerated 2-8 C", "3.9 mg/mL*"]]
 
     for row_number in range(len(rows) + 1):
         y_position = top - row_number * row_height
-        document_canvas.line(
-            left,
-            y_position,
-            left + 2 * column_width,
-            y_position,
-        )
+        document_canvas.line(left, y_position, left + 2 * column_width, y_position)
 
     for column_number in range(3):
         x_position = left + column_number * column_width
-        document_canvas.line(
-            x_position,
-            top,
-            x_position,
-            top - len(rows) * row_height,
-        )
+        document_canvas.line(x_position, top, x_position, top - len(rows) * row_height)
 
     for row_number, row in enumerate(rows):
         for column_number, cell in enumerate(row):
@@ -99,9 +72,7 @@ class DocumentAnalysisTests(unittest.TestCase):
         self.assertEqual(choose_analysis_route(state), "deep")
 
     def test_page_count_does_not_override_token_routing(self):
-        extracted_document = extract_structured_pdf(
-            create_single_line_pdf(3, page_count=200)
-        )
+        extracted_document = extract_structured_pdf(create_single_line_pdf(3, page_count=200))
         state = {"extracted_token_count": extracted_document.token_count}
 
         self.assertEqual(len(extracted_document.pages), 200)
@@ -111,38 +82,34 @@ class DocumentAnalysisTests(unittest.TestCase):
     def test_supported_fixture_page_scales_are_extractable(self):
         for page_count in (1, 5, 20, 150):
             with self.subTest(page_count=page_count):
-                extracted_document = extract_structured_pdf(
-                    create_single_line_pdf(3, page_count=page_count)
-                )
+                extracted_document = extract_structured_pdf(create_single_line_pdf(3, page_count=page_count))
                 self.assertEqual(len(extracted_document.pages), page_count)
 
     def test_every_nonblank_fixture_page_creates_evidence(self):
         pages = []
 
         for page_number in range(1, 21):
-            pages.append(
-                {
-                    "page_number": page_number,
-                    "narrative_text": f"Evidence on page {page_number}",
-                    "headings": [],
-                    "tables": [],
-                }
-            )
+            pages.append({"page_number": page_number, "narrative_text": f"Evidence on page {page_number}", "headings": [], "tables": []})
 
-        evidence_chunks = create_document_evidence_chunks(pages)
-        covered_pages = {chunk.page_start for chunk in evidence_chunks}
+        document_evidence_chunks = create_document_evidence_chunks(pages, embedding_function=lambda texts: [[1.0, 0.0] for _ in texts])
+        covered_pages = {chunk.page_start for chunk in document_evidence_chunks}
         self.assertEqual(covered_pages, set(range(1, 21)))
 
     def test_document_limits_are_independent_from_legacy_chat_limits(self):
         self.assertEqual(config.MAX_ATTACHED_FILE_LENGTH, 230)
         self.assertEqual(config.DEEP_PDF_ANALYSIS_TRIGGER_TOKENS, 230)
+        self.assertEqual(config.MAX_DOCUMENT_EXTRACTED_TOKENS, 200_000)
         self.assertEqual(config.MAX_DOCUMENT_MODEL_INPUT_TOKENS, 24_000)
         self.assertEqual(config.MAX_DOCUMENT_EVIDENCE_TOKENS, 18_000)
+        self.assertEqual(config.MAX_DOCUMENT_SMALL_SUMMARY_TOKENS, 350)
+        self.assertEqual(config.MAX_DOCUMENT_MEDIUM_SUMMARY_TOKENS, 700)
+        self.assertEqual(config.MAX_DOCUMENT_LARGE_SUMMARY_TOKENS, 900)
+        self.assertEqual(config.MAX_DOCUMENT_EXTRALARGE_SUMMARY_TOKENS, 900)
+        self.assertEqual(config.MAX_DOCUMENT_ROOT_SUMMARY_TOKENS, 1_200)
         self.assertEqual(config.MAX_DOCUMENT_ANSWER_TOKENS, 2_000)
-        self.assertNotEqual(
-            config.MAX_DOCUMENT_ANSWER_TOKENS,
-            config.MAX_RESPONSE_TOKENS,
-        )
+        self.assertEqual(config.MAX_DOCUMENT_FILE_BYTES, 25 * 1024 * 1024)
+        self.assertEqual(config.DOCUMENT_ANALYSIS_VERSION, "pdf-cluster-semantic-v2")
+        self.assertNotEqual(config.MAX_DOCUMENT_ANSWER_TOKENS, config.MAX_RESPONSE_TOKENS)
 
     def test_table_values_headers_units_and_footnote_are_preserved(self):
         extracted_document = extract_structured_pdf(create_table_pdf())
@@ -157,13 +124,9 @@ class DocumentAnalysisTests(unittest.TestCase):
         self.assertIn("* Mean of three replicates", page.narrative_text)
         self.assertNotIn("4.5 mg/mL", page.narrative_text)
 
-    def test_evidence_chunks_are_bounded_and_overlap(self):
+    def test_document_chunks_are_bounded_and_overlap(self):
         words = [f"biology{word_number}" for word_number in range(500)]
-        chunks = split_text_into_word_chunks(
-            " ".join(words),
-            maximum_tokens=120,
-            overlap_tokens=20,
-        )
+        chunks = split_text_into_document_evidence_chunks(" ".join(words), maximum_tokens=120, overlap_tokens=20)
 
         self.assertGreater(len(chunks), 2)
         self.assertTrue(all(len(chunk) > 0 for chunk in chunks))
@@ -173,197 +136,116 @@ class DocumentAnalysisTests(unittest.TestCase):
 
     def test_large_table_chunks_repeat_headers_and_preserve_rows(self):
         header = "| Condition | Value |\n| --- | --- |"
-        rows = [
-            f"| Storage condition {row_number} | {row_number}.5 mg/mL |"
-            for row_number in range(120)
-        ]
+        rows = [f"| Storage condition {row_number} | {row_number}.5 mg/mL |" for row_number in range(120)]
         chunks = split_markdown_table_into_chunks(header + "\n" + "\n".join(rows))
 
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(chunk.startswith(header) for chunk in chunks))
         self.assertIn("| Storage condition 119 | 119.5 mg/mL |", chunks[-1])
 
+    def test_table_evidence_retains_the_exact_source_table_id(self):
+        page = {"page_number": 7, "tables": [{"id": 91, "table_number": 2, "markdown": "| Value |\n| --- |\n| 4.5 mg/mL |"}]}
+
+        table_chunks = create_table_document_evidence_chunks(page)
+
+        self.assertEqual(len(table_chunks), 1)
+        self.assertEqual(table_chunks[0].source_table_id, 91)
+
     def test_adaptive_depth_phrases_are_deterministic(self):
         self.assertEqual(classify_answer_depth("Briefly summarize the document"), "overview")
         self.assertEqual(classify_answer_depth("Go deeper into storage"), "evidence")
         self.assertEqual(classify_answer_depth("What exact value is in the table?"), "evidence")
 
+    def test_ambiguous_depth_uses_model_classification(self):
+        with patch("app.services.document_retrieval_service.generate_model_response", return_value="focused") as classify_with_model:
+            answer_depth = classify_answer_depth("Tell me about storage behavior")
+
+        self.assertEqual(answer_depth, "focused")
+        classify_with_model.assert_called_once()
+
+    def test_go_deeper_advances_one_level_and_stops_at_evidence(self):
+        self.assertEqual(increase_answer_depth("overview"), "section")
+        self.assertEqual(increase_answer_depth("section"), "focused")
+        self.assertEqual(increase_answer_depth("focused"), "evidence")
+        self.assertEqual(increase_answer_depth("evidence"), "evidence")
+
+    def test_analysis_retry_resumes_from_the_last_completed_stage(self):
+        self.assertEqual(choose_resume_route({"resume_stage": "queued"}), "extract")
+        self.assertEqual(choose_resume_route({"resume_stage": "extracted"}), "index")
+        self.assertEqual(choose_resume_route({"resume_stage": "indexed"}), "analyze")
+        self.assertEqual(choose_resume_route({"resume_stage": "summarized"}), "verify")
+
+    def test_empty_root_summary_fails_deterministic_verification(self):
+        state = {"document_id": "document-id", "job_id": 5, "root_summary": "", "analysis_mode": "deep"}
+
+        with patch("app.workflows.document_analysis.nodes.count_uncovered_nonblank_document_pages_from_db", return_value=0), patch("app.workflows.document_analysis.nodes.count_uncovered_document_tables_from_db", return_value=0), patch("app.workflows.document_analysis.nodes.count_unprovenanced_summary_nodes_from_db", return_value=0), patch("app.workflows.document_analysis.nodes.document_has_root_summary_node_from_db", return_value=True):
+            with self.assertRaisesRegex(RuntimeError, "root summary is empty"):
+                verify_document_node(state)
+
     def test_citations_are_validated_against_owned_document_pages(self):
         document_id = "11111111-1111-1111-1111-111111111111"
-        documents = [
-            {
-                "id": document_id,
-                "filename": "study.pdf",
-                "page_count": 5,
-            }
-        ]
-        evidence_nodes = [
-            {
-                "document_id": document_id,
-                "page_start": 3,
-            }
-        ]
-        raw_answer = (
-            f"Supported claim [DOC:{document_id}:PAGE:3]. "
-            f"Invalid claim [DOC:{document_id}:PAGE:8]."
-        )
-        answer = validate_and_link_citations(
-            raw_answer,
-            documents,
-            evidence_nodes,
-            user_id=7,
-        )
+        documents = [{"id": document_id, "filename": "study.pdf", "page_count": 5}]
+        document_evidence_chunks = [{"document_id": document_id, "page_start": 3}]
+        raw_answer = f"Supported claim [DOC:{document_id}:PAGE:3]. " f"Unretrieved claim [DOC:{document_id}:PAGE:4]. " f"Out-of-range claim [DOC:{document_id}:PAGE:8]."
+        answer = validate_and_link_citations(raw_answer, documents, document_evidence_chunks, user_id=7)
 
         self.assertIn("study.pdf, p. 3", answer)
         self.assertIn("user_id=7#page=3", answer)
-        self.assertIn("[unavailable source]", answer)
+        self.assertEqual(answer.count("[unavailable source]"), 2)
 
     def test_cross_document_citations_resolve_independently(self):
         first_id = "11111111-1111-1111-1111-111111111111"
         second_id = "22222222-2222-2222-2222-222222222222"
-        documents = [
-            {"id": first_id, "filename": "first.pdf", "page_count": 8},
-            {"id": second_id, "filename": "second.pdf", "page_count": 12},
-        ]
-        evidence_nodes = [
-            {"document_id": first_id, "page_start": 2},
-            {"document_id": second_id, "page_start": 11},
-        ]
-        raw_answer = (
-            f"First result [DOC:{first_id}:PAGE:2]. "
-            f"Second result [DOC:{second_id}:PAGE:11]."
-        )
-        answer = validate_and_link_citations(
-            raw_answer,
-            documents,
-            evidence_nodes,
-            user_id=9,
-        )
+        documents = [{"id": first_id, "filename": "first.pdf", "page_count": 8}, {"id": second_id, "filename": "second.pdf", "page_count": 12}]
+        document_evidence_chunks = [{"document_id": first_id, "page_start": 2}, {"document_id": second_id, "page_start": 11}]
+        raw_answer = f"First result [DOC:{first_id}:PAGE:2]. " f"Second result [DOC:{second_id}:PAGE:11]."
+        answer = validate_and_link_citations(raw_answer, documents, document_evidence_chunks, user_id=9)
 
         self.assertIn("first.pdf, p. 2", answer)
         self.assertIn("second.pdf, p. 11", answer)
 
     def test_rank_fusion_and_diversification_keep_distant_documents(self):
-        first_document_node = {
-            "id": 1,
-            "document_id": "first",
-            "page_start": 2,
-        }
-        distant_first_document_node = {
-            "id": 2,
-            "document_id": "first",
-            "page_start": 90,
-        }
-        second_document_node = {
-            "id": 3,
-            "document_id": "second",
-            "page_start": 5,
-        }
-        vector_results = [
-            first_document_node,
-            distant_first_document_node,
-            second_document_node,
-        ]
-        lexical_results = [
-            distant_first_document_node,
-            second_document_node,
-            first_document_node,
-        ]
-        fused_results = reciprocal_rank_fusion(
-            [vector_results, lexical_results]
-        )
-        diversified_results = diversify_ranked_nodes(
-            fused_results,
-            ["first", "second"],
-        )
+        first_document_node = {"id": 1, "document_id": "first", "page_start": 2}
+        distant_first_document_node = {"id": 2, "document_id": "first", "page_start": 90}
+        second_document_node = {"id": 3, "document_id": "second", "page_start": 5}
+        vector_results = [first_document_node, distant_first_document_node, second_document_node]
+        lexical_results = [distant_first_document_node, second_document_node, first_document_node]
+        fused_results = reciprocal_rank_fusion([vector_results, lexical_results])
+        diversified_results = diversify_ranked_nodes(fused_results, ["first", "second"])
 
         selected_ids = {node["id"] for node in diversified_results}
         self.assertEqual(selected_ids, {1, 2, 3})
-        self.assertEqual(
-            {node["document_id"] for node in diversified_results[:2]},
-            {"first", "second"},
-        )
+        self.assertEqual({node["document_id"] for node in diversified_results[:2]}, {"first", "second"})
 
-    def test_150_page_hierarchy_builds_packet_section_and_major_levels(self):
-        leaf = StoredHierarchyNode(
-            id=1,
-            node_type="evidence",
-            title="Evidence",
-            content="Scientific evidence",
-            page_start=1,
-            page_end=150,
-            token_count=20,
-            leaf_ids=[1],
-        )
-        root = StoredHierarchyNode(
-            id=99,
-            node_type="root",
-            title="Root",
-            content="Root summary",
-            page_start=1,
-            page_end=150,
-            token_count=10,
-            leaf_ids=[1],
-        )
+    def test_150_page_hierarchy_builds_small_medium_large_and_extralarge_levels(self):
+        leaf = DocumentEvidenceChunkMeta(id=1, node_type="evidence", title="Evidence", content="Scientific evidence", page_start=1, page_end=150, token_count=20, leaf_ids=[1])
+        root = DocumentEvidenceChunkMeta(id=99, node_type="root", title="Root", content="Root summary", page_start=1, page_end=150, token_count=10, leaf_ids=[1])
 
-        with patch(
-            "app.services.document_hierarchy_service.build_hierarchy_level",
-            side_effect=lambda _document_id, source_nodes, *_args: source_nodes,
-        ) as build_level, patch(
-            "app.services.document_hierarchy_service.create_stored_summary_node",
-            return_value=root,
-        ):
+        with patch("app.services.document_hierarchy_service.build_hierarchy_level", side_effect=lambda _document_id, source_nodes, *_args: list(source_nodes)) as build_level, patch("app.services.document_hierarchy_service.create_stored_summary_node", return_value=root):
             result = build_deep_document_hierarchy("document-id", [leaf], 150)
 
         self.assertEqual(result, root)
-        self.assertEqual(build_level.call_count, 3)
+        self.assertEqual(build_level.call_count, 4)
+        hierarchy_levels = [call.args[3] for call in build_level.call_args_list]
         target_page_spans = [call.args[4] for call in build_level.call_args_list]
-        self.assertEqual(target_page_spans, [4, 10, 30])
+        self.assertEqual(hierarchy_levels, [1, 2, 3, 4])
+        self.assertEqual(target_page_spans, [4, 10, 30, 60])
+
+    def test_hierarchy_omits_a_level_that_would_create_only_one_summary(self):
+        leaf = DocumentEvidenceChunkMeta(id=1, node_type="evidence", title="Evidence", content="Scientific evidence", page_start=1, page_end=2, token_count=20, leaf_ids=[1])
+
+        with patch("app.services.document_hierarchy_service.create_stored_summary_node") as create_summary:
+            result = build_hierarchy_level("document-id", [leaf], "small", 1, 4, 350)
+
+        self.assertEqual(result, [leaf])
+        create_summary.assert_not_called()
 
     def test_summary_node_retains_unique_leaf_provenance(self):
-        first_source = StoredHierarchyNode(
-            id=10,
-            node_type="packet",
-            title="First",
-            content="First evidence",
-            page_start=1,
-            page_end=4,
-            token_count=10,
-            leaf_ids=[1, 2],
-        )
-        second_source = StoredHierarchyNode(
-            id=11,
-            node_type="packet",
-            title="Second",
-            content="Second evidence",
-            page_start=5,
-            page_end=8,
-            token_count=10,
-            leaf_ids=[2, 3],
-        )
+        first_source = DocumentEvidenceChunkMeta(id=10, node_type="small", title="First", content="First evidence", page_start=1, page_end=4, token_count=10, leaf_ids=[1, 2])
+        second_source = DocumentEvidenceChunkMeta(id=11, node_type="small", title="Second", content="Second evidence", page_start=5, page_end=8, token_count=10, leaf_ids=[2, 3])
 
-        with patch(
-            "app.services.document_hierarchy_service.summarize_nodes_with_bounded_requests",
-            return_value="Combined summary",
-        ), patch(
-            "app.services.document_hierarchy_service.create_document_embeddings",
-            return_value=[[0.0] * 384],
-        ), patch(
-            "app.services.document_hierarchy_service.create_document_node_from_db",
-            return_value={"id": 50},
-        ), patch(
-            "app.services.document_hierarchy_service.set_document_node_parent_from_db"
-        ), patch(
-            "app.services.document_hierarchy_service.create_document_node_sources_from_db"
-        ) as create_sources:
-            summary_node = create_stored_summary_node(
-                "document-id",
-                "section",
-                2,
-                "Section",
-                [first_source, second_source],
-                700,
-            )
+        with patch("app.services.document_hierarchy_service.summarize_nodes_with_bounded_requests", return_value="Combined summary"), patch("app.services.document_hierarchy_service.get_existing_summary_node_from_db", return_value=None), patch("app.services.document_hierarchy_service.create_final_document_embeddings", return_value=[[0.0] * 384]), patch("app.services.document_hierarchy_service.create_document_node_db", return_value={"id": 50}), patch("app.services.document_hierarchy_service.set_document_node_parent_from_db"), patch("app.services.document_hierarchy_service.create_document_node_sources_from_db") as create_sources:
+            summary_node = create_stored_summary_node("document-id", "medium", 2, "Medium", [first_source, second_source], 700)
 
         self.assertEqual(summary_node.leaf_ids, [1, 2, 3])
         create_sources.assert_called_once_with(50, [1, 2, 3])
@@ -372,26 +254,13 @@ class DocumentAnalysisTests(unittest.TestCase):
         nodes = []
 
         for node_id in range(100):
-            nodes.append(
-                StoredHierarchyNode(
-                    id=node_id,
-                    node_type="evidence",
-                    title=f"Node {node_id}",
-                    content="Evidence",
-                    page_start=node_id + 1,
-                    page_end=node_id + 1,
-                    token_count=450,
-                    leaf_ids=[node_id],
-                )
-            )
+            nodes.append(DocumentEvidenceChunkMeta(id=node_id, node_type="evidence", title=f"Record {node_id}", content="Evidence", page_start=node_id + 1, page_end=node_id + 1, token_count=450, leaf_ids=[node_id]))
 
         input_budget = config.MAX_DOCUMENT_MODEL_INPUT_TOKENS - 700
         partitions = partition_nodes_by_input_budget(nodes, input_budget)
 
         for partition in partitions:
-            estimated_partition_tokens = sum(
-                node.token_count + 25 for node in partition
-            )
+            estimated_partition_tokens = sum(node.token_count + 25 for node in partition)
             self.assertLessEqual(estimated_partition_tokens, input_budget)
 
 

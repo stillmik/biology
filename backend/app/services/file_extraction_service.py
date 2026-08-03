@@ -4,10 +4,10 @@ import re
 import pdfplumber
 
 from fastapi import HTTPException, UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from ..core.config import MAX_ATTACHED_FILE_BYTES, MAX_ATTACHED_FILE_LENGTH
 from ..utils.chat_context import estimate_tokens
-
 
 SUPPORTED_FILE_EXTENSIONS = {".txt", ".pdf"}
 SUPPORTED_CONTENT_TYPES = {"text/plain", "application/pdf"}
@@ -76,5 +76,6 @@ def extract_text_from_uploaded_file(filename: str, content_type: str | None, fil
 
 async def create_message_with_uploaded_file(message: str, uploaded_file: UploadFile) -> str:
     filename = (uploaded_file.filename or "attachment").strip()
-    extracted_text = extract_text_from_uploaded_file(filename, uploaded_file.content_type, await uploaded_file.read())
+    file_bytes = await uploaded_file.read()
+    extracted_text = await run_in_threadpool(extract_text_from_uploaded_file, filename, uploaded_file.content_type, file_bytes)
     return f"{message.strip()}\n\n[Attached file: {filename}]\n{extracted_text}"

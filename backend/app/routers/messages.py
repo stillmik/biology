@@ -9,7 +9,6 @@ from ..schemas.chat import ChatResponse, ContextBudgetError, MessageEditRequest
 from ..services.chat_service import regenerate_chat_reply
 from ..services.streaming_service import stream_regenerated_message_events
 
-
 router = APIRouter(prefix="/api/messages", tags=["messages"])
 logger = logging.getLogger(__name__)
 STREAM_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}

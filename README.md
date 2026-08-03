@@ -58,7 +58,12 @@ summary settings:
 | `MAX_DOCUMENT_SECTION_SUMMARY_TOKENS` | `700` |
 | `MAX_DOCUMENT_ROOT_SUMMARY_TOKENS` | `1200` |
 | `MAX_DOCUMENT_ANSWER_TOKENS` | `2000` |
-| `MAX_DOCUMENT_VERIFICATION_TOKENS` | `500` |
+| `MAX_DOCUMENT_FILE_BYTES` | `26214400` |
+| `DOCUMENT_ANALYSIS_VERSION` | `pdf-hierarchy-v2` |
+
+Document verification is deterministic, so it has no model-output token
+setting. It checks page coverage, table coverage, provenance, and root-summary
+presence directly in PostgreSQL.
 
 The new endpoints cover document upload, listing, status, original-file access,
 retry, deletion, conversation attachment, and answer-job polling under

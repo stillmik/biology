@@ -12,11 +12,10 @@ from psycopg.rows import dict_row
 from ..core.observability import DB_CONNECTION_FAILURES, DB_LOCK_WAIT_DURATION, log_event, observe_database_operation
 from .document_schema import initialize_document_schema
 
-
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://biology:biology@db:5432/biology_chat")
 
 
-def open_database_connection_from_db() -> psycopg.Connection:
+def open_database_connection() -> psycopg.Connection:
     try:
         return psycopg.connect(DATABASE_URL, row_factory=dict_row)
     except Exception:
@@ -25,9 +24,9 @@ def open_database_connection_from_db() -> psycopg.Connection:
         raise
 
 
-@observe_database_operation("initialize_database_from_db")
-def initialize_database_from_db() -> None:
-    with open_database_connection_from_db() as database_connection:
+@observe_database_operation("initialize_database")
+def initialize_database() -> None:
+    with open_database_connection() as database_connection:
         db = database_connection
         db.execute("CREATE TABLE IF NOT EXISTS users (id BIGSERIAL PRIMARY KEY, username TEXT NOT NULL UNIQUE, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)")
         db.execute("CREATE TABLE IF NOT EXISTS conversations (id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE, title TEXT NOT NULL DEFAULT 'New conversation', created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)")
@@ -53,92 +52,92 @@ def initialize_database_from_db() -> None:
 
 @observe_database_operation("create_user_from_db")
 def create_user_from_db(username: str) -> dict:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         db.execute("INSERT INTO users (username) VALUES (%s)", (username,))
         return db.execute("SELECT id, username FROM users WHERE username = %s", (username,)).fetchone()
 
 
 @observe_database_operation("get_user_from_db")
 def get_user_from_db(user_id: int) -> dict | None:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("SELECT id, username FROM users WHERE id = %s", (user_id,)).fetchone()
 
 
 @observe_database_operation("get_user_by_username_from_db")
 def get_user_by_username_from_db(username: str) -> dict | None:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("SELECT id, username FROM users WHERE username = %s", (username,)).fetchone()
 
 
 @observe_database_operation("list_user_messages_from_db")
 def list_user_messages_from_db(user_id: int) -> list[dict]:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("SELECT id, role, content, created_at FROM messages WHERE user_id = %s ORDER BY id", (user_id,)).fetchall()
 
 
 @observe_database_operation("create_conversation_from_db")
 def create_conversation_from_db(user_id: int, title: str = "New conversation") -> dict:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("INSERT INTO conversations (user_id, title) VALUES (%s, %s) RETURNING id, user_id, title, created_at, updated_at", (user_id, title)).fetchone()
 
 
 @observe_database_operation("list_user_conversations_from_db")
 def list_user_conversations_from_db(user_id: int) -> list[dict]:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("SELECT id, user_id, title, created_at, updated_at FROM conversations WHERE user_id = %s ORDER BY updated_at DESC, id DESC", (user_id,)).fetchall()
 
 
 @observe_database_operation("get_conversation_from_db")
 def get_conversation_from_db(conversation_id: int, user_id: int) -> dict | None:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("SELECT id, user_id, title, created_at, updated_at FROM conversations WHERE id = %s AND user_id = %s", (conversation_id, user_id)).fetchone()
 
 
 @observe_database_operation("list_conversation_messages_from_db")
 def list_conversation_messages_from_db(conversation_id: int) -> list[dict]:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("SELECT messages.id, messages.role, messages.content, messages.created_at, generated_files.id AS generated_file_id, generated_files.filename AS generated_file_name, generated_files.mime_type AS generated_file_mime_type FROM messages LEFT JOIN generated_files ON generated_files.message_id = messages.id WHERE messages.conversation_id = %s ORDER BY messages.id", (conversation_id,)).fetchall()
 
 
 @observe_database_operation("list_recent_conversation_messages_from_db")
 def list_recent_conversation_messages_from_db(conversation_id: int, limit: int) -> list[dict]:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("SELECT id, role, content, created_at FROM messages WHERE conversation_id = %s ORDER BY id DESC LIMIT %s", (conversation_id, limit)).fetchall()[::-1]
 
 
 @observe_database_operation("list_conversation_messages_after_from_db")
 def list_conversation_messages_after_from_db(conversation_id: int, message_id: int = 0) -> list[dict]:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("SELECT id, role, content, created_at FROM messages WHERE conversation_id = %s AND id > %s ORDER BY id", (conversation_id, message_id)).fetchall()
 
 
 @observe_database_operation("get_latest_summary_from_db")
 def get_latest_summary_from_db(conversation_id: int) -> dict | None:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("SELECT id, conversation_id, content, token_count, covered_until_message_id, created_at FROM conversation_summaries WHERE conversation_id = %s ORDER BY id DESC LIMIT 1", (conversation_id,)).fetchone()
 
 
 @observe_database_operation("list_conversation_summaries_from_db")
 def list_conversation_summaries_from_db(conversation_id: int) -> list[dict]:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("SELECT id, conversation_id, content, token_count, covered_until_message_id, created_at FROM conversation_summaries WHERE conversation_id = %s ORDER BY id DESC", (conversation_id,)).fetchall()
 
 
 @observe_database_operation("create_summary_from_db")
 def create_summary_from_db(conversation_id: int, content: str, token_count: int, covered_until_message_id: int) -> dict:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("INSERT INTO conversation_summaries (conversation_id, content, token_count, covered_until_message_id) VALUES (%s, %s, %s, %s) RETURNING id, conversation_id, content, token_count, covered_until_message_id, created_at", (conversation_id, content, token_count, covered_until_message_id)).fetchone()
 
 
 @observe_database_operation("get_latest_summary_segment_from_db")
 def get_latest_summary_segment_from_db(conversation_id: int) -> dict | None:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("SELECT id, conversation_id, content, token_count, covered_from_message_id, covered_until_message_id, created_at FROM conversation_summary_segments WHERE conversation_id = %s ORDER BY covered_until_message_id DESC, id DESC LIMIT 1", (conversation_id,)).fetchone()
 
 
 @observe_database_operation("list_recent_summary_segments_within_token_budget_from_db")
 def list_recent_summary_segments_within_token_budget_from_db(conversation_id: int, token_budget: int) -> list[dict]:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         newest_first = db.execute("SELECT id, conversation_id, content, token_count, covered_from_message_id, covered_until_message_id, created_at FROM conversation_summary_segments WHERE conversation_id = %s ORDER BY covered_until_message_id DESC, id DESC", (conversation_id,)).fetchall()
     selected, used_tokens = [], 0
     for segment in newest_first:
@@ -151,13 +150,13 @@ def list_recent_summary_segments_within_token_budget_from_db(conversation_id: in
 
 @observe_database_operation("create_summary_segment_from_db")
 def create_summary_segment_from_db(conversation_id: int, content: str, token_count: int, covered_from_message_id: int, covered_until_message_id: int) -> dict:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("INSERT INTO conversation_summary_segments (conversation_id, content, token_count, covered_from_message_id, covered_until_message_id) VALUES (%s, %s, %s, %s, %s) RETURNING id, conversation_id, content, token_count, covered_from_message_id, covered_until_message_id, created_at", (conversation_id, content, token_count, covered_from_message_id, covered_until_message_id)).fetchone()
 
 
 @observe_database_operation("create_message_from_db")
-def create_message_from_db(user_id: int, conversation_id: int, role: str, content: str) -> dict:
-    with open_database_connection_from_db() as db:
+def insert_message_db(user_id: int, conversation_id: int, role: str, content: str) -> dict:
+    with open_database_connection() as db:
         message = db.execute("INSERT INTO messages (user_id, conversation_id, role, content) VALUES (%s, %s, %s, %s) RETURNING id, conversation_id, role, content, created_at", (user_id, conversation_id, role, content)).fetchone()
         db.execute("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = %s AND user_id = %s", (conversation_id, user_id))
         return message
@@ -165,19 +164,19 @@ def create_message_from_db(user_id: int, conversation_id: int, role: str, conten
 
 @observe_database_operation("create_generated_file_from_db")
 def create_generated_file_from_db(file_id: str, user_id: int, conversation_id: int, message_id: int, filename: str, mime_type: str, storage_name: str) -> dict:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("INSERT INTO generated_files (id, user_id, conversation_id, message_id, filename, mime_type, storage_name) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id, filename, mime_type, storage_name", (file_id, user_id, conversation_id, message_id, filename, mime_type, storage_name)).fetchone()
 
 
 @observe_database_operation("get_generated_file_for_user_from_db")
 def get_generated_file_for_user_from_db(file_id: str, user_id: int) -> dict | None:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("SELECT generated_files.id, generated_files.filename, generated_files.mime_type, generated_files.storage_name FROM generated_files JOIN conversations ON conversations.id = generated_files.conversation_id WHERE generated_files.id = %s AND conversations.user_id = %s", (file_id, user_id)).fetchone()
 
 
 @observe_database_operation("enqueue_summary_job_from_db")
 def enqueue_summary_job_from_db(conversation_id: int, source_message_id: int | None, source_trace_id: str = "") -> dict:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         with db.transaction():
             active_job = db.execute("SELECT id, conversation_id, source_message_id, source_trace_id, status, attempt_count, max_attempts, available_at, claimed_at, completed_at, last_error, created_at, updated_at FROM summary_jobs WHERE conversation_id = %s AND status IN ('queued', 'running') ORDER BY id DESC LIMIT 1 FOR UPDATE", (conversation_id,)).fetchone()
             if active_job:
@@ -189,7 +188,7 @@ def enqueue_summary_job_from_db(conversation_id: int, source_message_id: int | N
 
 @observe_database_operation("claim_summary_job_from_db")
 def claim_summary_job_from_db() -> dict | None:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         with db.transaction():
             job = db.execute("SELECT id FROM summary_jobs WHERE status = 'queued' AND available_at <= NOW() ORDER BY available_at, id FOR UPDATE SKIP LOCKED LIMIT 1").fetchone()
             if not job:
@@ -199,13 +198,13 @@ def claim_summary_job_from_db() -> dict | None:
 
 @observe_database_operation("complete_summary_job_from_db")
 def complete_summary_job_from_db(job_id: int) -> None:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         db.execute("UPDATE summary_jobs SET status = 'completed', completed_at = NOW(), updated_at = NOW(), last_error = '' WHERE id = %s", (job_id,))
 
 
 @observe_database_operation("retry_summary_job_from_db")
 def retry_summary_job_from_db(job_id: int, sanitized_error: str) -> dict | None:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         with db.transaction():
             job = db.execute("SELECT id, attempt_count, max_attempts FROM summary_jobs WHERE id = %s FOR UPDATE", (job_id,)).fetchone()
             if not job:
@@ -216,39 +215,39 @@ def retry_summary_job_from_db(job_id: int, sanitized_error: str) -> dict | None:
 
 @observe_database_operation("cancel_pending_summary_jobs_for_conversation_from_db")
 def cancel_pending_summary_jobs_for_conversation_from_db(conversation_id: int) -> int:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         result = db.execute("UPDATE summary_jobs SET status = 'cancelled', completed_at = NOW(), updated_at = NOW() WHERE conversation_id = %s AND status = 'queued'", (conversation_id,))
         return result.rowcount
 
 
 @observe_database_operation("list_summary_job_counts_from_db")
 def list_summary_job_counts_from_db() -> list[dict]:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("SELECT status, COUNT(*) AS count FROM summary_jobs GROUP BY status").fetchall()
 
 
 @observe_database_operation("release_stale_summary_jobs_from_db")
 def release_stale_summary_jobs_from_db(stale_after_seconds: int = 900) -> int:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         result = db.execute("UPDATE summary_jobs SET status = 'queued', available_at = NOW(), claimed_at = NULL, updated_at = NOW(), last_error = 'worker_recovery' WHERE status = 'running' AND claimed_at < NOW() - (%s::TEXT || ' seconds')::INTERVAL", (stale_after_seconds,))
         return result.rowcount
 
 
 @observe_database_operation("update_conversation_title_from_db")
 def update_conversation_title_from_db(conversation_id: int, user_id: int, title: str) -> dict | None:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("UPDATE conversations SET title = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s AND user_id = %s RETURNING id, user_id, title, created_at, updated_at", (title, conversation_id, user_id)).fetchone()
 
 
 @observe_database_operation("get_message_for_user_from_db")
 def get_message_for_user_from_db(message_id: int, user_id: int) -> dict | None:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("SELECT messages.id, messages.conversation_id, messages.role, messages.content FROM messages JOIN conversations ON conversations.id = messages.conversation_id WHERE messages.id = %s AND conversations.user_id = %s", (message_id, user_id)).fetchone()
 
 
 @observe_database_operation("update_message_content_from_db")
 def update_message_content_from_db(message_id: int, user_id: int, content: str) -> dict | None:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         with db.transaction():
             message = db.execute("SELECT conversation_id FROM messages WHERE id = %s AND conversation_id IN (SELECT id FROM conversations WHERE user_id = %s) FOR UPDATE", (message_id, user_id)).fetchone()
             if not message:
@@ -268,7 +267,7 @@ def invalidate_memories_after_message_from_db(db, conversation_id: int, message_
 
 @observe_database_operation("delete_message_from_db")
 def delete_message_from_db(message_id: int, user_id: int) -> bool:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         with db.transaction():
             message = db.execute("SELECT m.conversation_id FROM messages AS m JOIN conversations AS c ON c.id = m.conversation_id WHERE m.id = %s AND c.user_id = %s FOR UPDATE", (message_id, user_id)).fetchone()
             if not message:
@@ -281,20 +280,20 @@ def delete_message_from_db(message_id: int, user_id: int) -> bool:
 
 @observe_database_operation("delete_conversation_from_db")
 def delete_conversation_from_db(conversation_id: int, user_id: int) -> bool:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         result = db.execute("DELETE FROM conversations WHERE id = %s AND user_id = %s", (conversation_id, user_id))
         return result.rowcount > 0
 
 
 @observe_database_operation("get_user_message_from_db")
 def get_user_message_from_db(message_id: int, user_id: int) -> dict | None:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         return db.execute("SELECT m.id, m.conversation_id, m.role, m.content, m.created_at FROM messages AS m JOIN conversations AS c ON c.id = m.conversation_id WHERE m.id = %s AND c.user_id = %s", (message_id, user_id)).fetchone()
 
 
 @observe_database_operation("count_messages_after_from_db")
 def count_messages_after_from_db(conversation_id: int, message_id: int) -> int:
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         row = db.execute("SELECT COUNT(*) AS count FROM messages WHERE conversation_id = %s AND id > %s", (conversation_id, message_id)).fetchone()
         return int(row["count"])
 
@@ -308,7 +307,7 @@ def update_user_message_and_delete_following_from_db(message_id: int, user_id: i
     the regenerated answer can only use memories from before the edit.
     """
 
-    with open_database_connection_from_db() as db:
+    with open_database_connection() as db:
         with db.transaction():
             message = db.execute("SELECT m.id, m.conversation_id, m.role FROM messages AS m JOIN conversations AS c ON c.id = m.conversation_id WHERE m.id = %s AND c.user_id = %s FOR UPDATE", (message_id, user_id)).fetchone()
 
@@ -333,7 +332,7 @@ def update_user_message_and_delete_following_from_db(message_id: int, user_id: i
 
 @observe_database_operation("list_conversation_messages_page_from_db")
 def list_conversation_messages_page_from_db(conversation_id: int, limit: int, before_id: int | None) -> list[dict]:
-    with open_database_connection_from_db() as connection:
+    with open_database_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute("SELECT messages.id, messages.role, messages.content, messages.created_at, generated_files.id AS generated_file_id, generated_files.filename AS generated_file_name, generated_files.mime_type AS generated_file_mime_type FROM messages LEFT JOIN generated_files ON generated_files.message_id = messages.id WHERE messages.conversation_id = %s AND (%s::bigint IS NULL OR messages.id < %s) ORDER BY messages.id DESC LIMIT %s", (conversation_id, before_id, before_id, limit))
             rows = cursor.fetchall()
@@ -341,8 +340,8 @@ def list_conversation_messages_page_from_db(conversation_id: int, limit: int, be
 
 
 @contextmanager
-def lock_conversation_from_db(conversation_id: int) -> Iterator[None]:
-    with open_database_connection_from_db() as connection:
+def lock_conversation_in_db(conversation_id: int) -> Iterator[None]:
+    with open_database_connection() as connection:
         started = perf_counter()
         with connection.cursor() as cursor:
             cursor.execute("SELECT pg_advisory_lock(%s)", (conversation_id,))

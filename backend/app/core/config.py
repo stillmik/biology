@@ -1,6 +1,5 @@
 import os
 
-
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 APP_VERSION = os.getenv("APP_VERSION", "0.3.0")
 XAI_MODEL = os.getenv("XAI_MODEL", "grok-4.3")
@@ -21,11 +20,10 @@ SUMMARY_CONTEXT_SUMMARY_MULTIPLIER = max(1, int(os.getenv("SUMMARY_CONTEXT_SUMMA
 MAX_CONTEXT_EXTRA_RESPONSE_MULTIPLIER = max(0, int(os.getenv("MAX_CONTEXT_EXTRA_RESPONSE_MULTIPLIER", "2")))
 
 
-
-# Summarization becomes eligible when the older unsummarized conversation 
-# reaches approximately SUMMARY_TRIGGER_TOKENS estimated tokens. 
-# This counts raw messages that have not yet been included in a summary, 
-# including user and assistant messages. Counts all unsummarized 
+# Summarization becomes eligible when the older unsummarized conversation
+# reaches approximately SUMMARY_TRIGGER_TOKENS estimated tokens.
+# This counts raw messages that have not yet been included in a summary,
+# including user and assistant messages. Counts all unsummarized
 # raw tokens, including the protected KEEP_RECENT_TOKENS
 SUMMARY_TRIGGER_TOKENS = MAX_RESPONSE_TOKENS * SUMMARY_TRIGGER_RESPONSE_MULTIPLIER
 # Controls which messages are protected from summarization.
@@ -53,14 +51,17 @@ DEEP_PDF_ANALYSIS_TRIGGER_TOKENS = max(1, int(os.getenv("DEEP_PDF_ANALYSIS_TRIGG
 MAX_DOCUMENT_EXTRACTED_TOKENS = max(1, int(os.getenv("MAX_DOCUMENT_EXTRACTED_TOKENS", "200000")))
 MAX_DOCUMENT_MODEL_INPUT_TOKENS = max(1, int(os.getenv("MAX_DOCUMENT_MODEL_INPUT_TOKENS", "24000")))
 MAX_DOCUMENT_EVIDENCE_TOKENS = max(1, int(os.getenv("MAX_DOCUMENT_EVIDENCE_TOKENS", "18000")))
-MAX_DOCUMENT_PACKET_SUMMARY_TOKENS = max(1, int(os.getenv("MAX_DOCUMENT_PACKET_SUMMARY_TOKENS", "350")))
-MAX_DOCUMENT_SECTION_SUMMARY_TOKENS = max(1, int(os.getenv("MAX_DOCUMENT_SECTION_SUMMARY_TOKENS", "700")))
+MAX_DOCUMENT_SMALL_SUMMARY_TOKENS = max(1, int(os.getenv("MAX_DOCUMENT_SMALL_SUMMARY_TOKENS", os.getenv("MAX_DOCUMENT_PACKET_SUMMARY_TOKENS", "350"))))
+MAX_DOCUMENT_MEDIUM_SUMMARY_TOKENS = max(1, int(os.getenv("MAX_DOCUMENT_MEDIUM_SUMMARY_TOKENS", os.getenv("MAX_DOCUMENT_SECTION_SUMMARY_TOKENS", "700"))))
+MAX_DOCUMENT_LARGE_SUMMARY_TOKENS = max(1, int(os.getenv("MAX_DOCUMENT_LARGE_SUMMARY_TOKENS", os.getenv("MAX_DOCUMENT_MAJOR_SUMMARY_TOKENS", "900"))))
+MAX_DOCUMENT_EXTRALARGE_SUMMARY_TOKENS = max(1, int(os.getenv("MAX_DOCUMENT_EXTRALARGE_SUMMARY_TOKENS", os.getenv("MAX_DOCUMENT_OVERVIEW_SUMMARY_TOKENS", "900"))))
 MAX_DOCUMENT_ROOT_SUMMARY_TOKENS = max(1, int(os.getenv("MAX_DOCUMENT_ROOT_SUMMARY_TOKENS", "1200")))
 MAX_DOCUMENT_ANSWER_TOKENS = max(1, int(os.getenv("MAX_DOCUMENT_ANSWER_TOKENS", "2000")))
-MAX_DOCUMENT_VERIFICATION_TOKENS = max(1, int(os.getenv("MAX_DOCUMENT_VERIFICATION_TOKENS", "500")))
 MAX_DOCUMENT_FILE_BYTES = max(1, int(os.getenv("MAX_DOCUMENT_FILE_BYTES", str(25 * 1024 * 1024))))
 DOCUMENT_STORAGE_DIRECTORY = os.getenv("DOCUMENT_STORAGE_DIRECTORY", "/app/uploaded_documents")
-DOCUMENT_ANALYSIS_VERSION = os.getenv("DOCUMENT_ANALYSIS_VERSION", "pdf-hierarchy-v1")
+DOCUMENT_ANALYSIS_VERSION = os.getenv("DOCUMENT_ANALYSIS_VERSION", "pdf-cluster-semantic-v2")
+DOCUMENT_CLUSTER_SEED_TOKENS = max(1, int(os.getenv("DOCUMENT_CLUSTER_SEED_TOKENS", "50")))
+DOCUMENT_CLUSTER_MAX_TOKENS = max(1, int(os.getenv("DOCUMENT_CLUSTER_MAX_TOKENS", "400")))
 DOCUMENT_EMBEDDING_MODEL = os.getenv("DOCUMENT_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 DOCUMENT_EMBEDDING_DIMENSIONS = max(1, int(os.getenv("DOCUMENT_EMBEDDING_DIMENSIONS", "384")))
 DOCUMENT_EMBEDDING_CACHE_DIRECTORY = os.getenv("DOCUMENT_EMBEDDING_CACHE_DIRECTORY", "/app/model_cache")

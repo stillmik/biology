@@ -1,6 +1,5 @@
 from openai import OpenAI
 
-
 _xai_client: OpenAI | None = None
 
 

@@ -9,15 +9,9 @@ from openai import OpenAI
 from ..core.clients import close_xai_client, set_xai_client
 from ..core.config import ANSWER_WORKER_POLL_SECONDS, XAI_MODEL
 from ..core.observability import configure_logging, langsmith_tracing_extra, log_event
-from ..infrastructure.database import initialize_database_from_db, lock_conversation_from_db
-from ..infrastructure.document_repository import (
-    claim_answer_job_from_db,
-    list_answer_job_documents_from_db,
-    release_stale_answer_jobs_from_db,
-    retry_answer_job_from_db,
-)
+from ..infrastructure.database import initialize_database, lock_conversation_in_db
+from ..infrastructure.document_job_repository import claim_answer_job_db, list_answer_job_documents_from_db, release_stale_answer_jobs_from_db, retry_answer_job_from_db
 from ..services.document_answer_service import generate_and_save_document_answer
-
 
 load_dotenv()
 configure_logging()
@@ -31,33 +25,14 @@ def process_answer_job(job: dict) -> None:
         if not documents or any(document["status"] != "ready" for document in documents):
             raise RuntimeError("Answer job was released before all documents were ready")
 
-        with lock_conversation_from_db(job["conversation_id"]):
-            generate_and_save_document_answer(
-                job["user_id"],
-                job["conversation_id"],
-                job["question"],
-                documents,
-                job["id"],
-            )
-        log_event(
-            logger,
-            logging.INFO,
-            "document_answer_job_completed",
-            answer_job_id=job["id"],
-            conversation_id=job["conversation_id"],
-        )
+        with lock_conversation_in_db(job["conversation_id"]):
+            generate_and_save_document_answer(job["user_id"], job["conversation_id"], job["question"], documents, job["id"])
+        log_event(logger, logging.INFO, "document_answer_job_completed", answer_job_id=job["id"], conversation_id=job["conversation_id"])
     except Exception as error:
-        retry_job = retry_answer_job_from_db(job["id"], type(error).__name__)
+        exception_type = type(error).__name__
+        retry_job = retry_answer_job_from_db(job["id"], exception_type)
         outcome = retry_job["status"] if retry_job else "missing"
-        log_event(
-            logger,
-            logging.ERROR,
-            "document_answer_job_failed",
-            answer_job_id=job["id"],
-            conversation_id=job["conversation_id"],
-            outcome=outcome,
-            exception_type=type(error).__name__,
-        )
+        log_event(logger, logging.ERROR, "document_answer_job_failed", answer_job_id=job["id"], conversation_id=job["conversation_id"], outcome=outcome, exception_type=exception_type)
 
 
 def run_answer_worker() -> None:
@@ -66,7 +41,7 @@ def run_answer_worker() -> None:
     if not api_key:
         raise RuntimeError("XAI_API_KEY is not configured")
 
-    initialize_database_from_db()
+    initialize_database()
     release_stale_answer_jobs_from_db()
     xai_client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
     set_xai_client(wrap_openai(xai_client, tracing_extra=langsmith_tracing_extra()))
@@ -74,7 +49,7 @@ def run_answer_worker() -> None:
 
     try:
         while True:
-            job = claim_answer_job_from_db()
+            job = claim_answer_job_db()
 
             if job:
                 process_answer_job(job)

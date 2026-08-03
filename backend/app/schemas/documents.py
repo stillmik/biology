@@ -6,11 +6,12 @@ from pydantic import BaseModel, Field
 class DocumentAnalysisState(TypedDict):
     job_id: int
     document_id: str
+    resume_stage: NotRequired[str]
     storage_name: NotRequired[str]
     extracted_token_count: NotRequired[int]
     page_count: NotRequired[int]
     analysis_mode: NotRequired[str]
-    evidence_node_ids: NotRequired[list[int]]
+    document_evidence_chunk_ids: NotRequired[list[int]]
     root_summary: NotRequired[str]
 
 

@@ -6,7 +6,6 @@ from fastapi.responses import FileResponse
 from ..core.config import GENERATED_FILES_DIRECTORY
 from ..infrastructure.database import get_generated_file_for_user_from_db
 
-
 router = APIRouter(prefix="/api/files", tags=["generated files"])
 
 

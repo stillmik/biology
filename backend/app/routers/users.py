@@ -8,7 +8,6 @@ from ..core.observability import APP_OPERATIONS, hash_identifier, log_event, obs
 from ..infrastructure.database import create_user_from_db, get_user_by_username_from_db, get_user_from_db
 from ..schemas.chat import RegisterRequest, UserResponse
 
-
 router = APIRouter(prefix="/api/users", tags=["users"])
 logger = logging.getLogger(__name__)
 

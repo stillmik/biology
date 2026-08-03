@@ -25,7 +25,6 @@ from langsmith.anonymizer import create_anonymizer
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 
-
 SERVICE_NAME = os.getenv("SERVICE_NAME", "biology-chat-backend")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 APP_VERSION = os.getenv("APP_VERSION", "0.3.0")
@@ -202,9 +201,9 @@ def route_template(request: Request) -> str:
 
 class RequestObservabilityMiddleware(BaseHTTPMiddleware):
     """
-    inherits from FastAPI or Starlette's BaseHTTPMiddleware. 
-    That means FastAPI calls its dispatch() method for every request. 
-    
+    inherits from FastAPI or Starlette's BaseHTTPMiddleware.
+    That means FastAPI calls its dispatch() method for every request.
+
     request arrives
       ↓
     generate request ID
@@ -225,6 +224,7 @@ class RequestObservabilityMiddleware(BaseHTTPMiddleware):
         ↓
     clean up request context
     """
+
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         request_id = str(uuid.uuid4())
         request_token = REQUEST_ID.set(request_id)
@@ -291,7 +291,9 @@ def observe_database_operation(operation: str) -> Callable[[F], F]:
                 return result
             finally:
                 DB_OPERATION_DURATION.labels(operation=operation).observe(time.perf_counter() - started)
+
         return wrapped  # type: ignore[return-value]
+
     return decorator
 
 

@@ -36,12 +36,7 @@ def write_document_file_atomically(storage_name: str, file_bytes: bytes) -> Path
     return final_path
 
 
-def create_library_document(
-    user_id: int,
-    filename: str,
-    content_type: str | None,
-    file_bytes: bytes,
-) -> tuple[dict, bool]:
+def document_to_s3_and_metainfo_to_db(user_id: int, filename: str, content_type: str | None, file_bytes: bytes) -> tuple[dict, bool]:
     validate_pdf_upload(filename, content_type, file_bytes)
     document_id = str(uuid.uuid4())
     safe_filename = sanitize_document_filename(filename)
@@ -50,14 +45,7 @@ def create_library_document(
     storage_path = write_document_file_atomically(storage_name, file_bytes)
 
     try:
-        document, created = create_or_get_document_from_db(
-            document_id=document_id,
-            user_id=user_id,
-            filename=safe_filename,
-            storage_name=storage_name,
-            checksum_sha256=checksum_sha256,
-            analysis_version=DOCUMENT_ANALYSIS_VERSION,
-        )
+        document, created = create_or_get_document_from_db(document_id=document_id, user_id=user_id, filename=safe_filename, storage_name=storage_name, checksum_sha256=checksum_sha256, analysis_version=DOCUMENT_ANALYSIS_VERSION)
     except Exception:
         storage_path.unlink(missing_ok=True)
         raise

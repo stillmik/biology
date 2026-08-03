@@ -3,20 +3,16 @@ import os
 import time
 
 from dotenv import load_dotenv
+from fastapi import HTTPException
 from langsmith.wrappers import wrap_openai
 from openai import OpenAI
 
 from ..core.clients import close_xai_client, set_xai_client
 from ..core.config import DOCUMENT_WORKER_POLL_SECONDS, XAI_MODEL
 from ..core.observability import configure_logging, langsmith_tracing_extra, log_event
-from ..infrastructure.database import initialize_database_from_db
-from ..infrastructure.document_repository import (
-    claim_document_analysis_job_from_db,
-    release_stale_document_analysis_jobs_from_db,
-    retry_document_analysis_job_from_db,
-)
+from ..infrastructure.database import initialize_database
+from ..infrastructure.document_job_repository import claim_document_analysis_job_from_db, release_stale_document_analysis_jobs, retry_document_analysis_job_from_db
 from ..workflows.document_analysis import document_analysis_graph
-
 
 load_dotenv()
 configure_logging()
@@ -25,34 +21,17 @@ logger = logging.getLogger(__name__)
 
 def process_document_analysis_job(job: dict) -> None:
     try:
-        document_analysis_graph.invoke(
-            {
-                "job_id": job["id"],
-                "document_id": job["document_id"],
-            }
-        )
-        log_event(
-            logger,
-            logging.INFO,
-            "document_analysis_completed",
-            document_id=job["document_id"],
-            analysis_job_id=job["id"],
-        )
+        initial_graph_state = {"job_id": job["id"], "document_id": job["document_id"], "resume_stage": job["stage"]}
+        document_analysis_graph.invoke(initial_graph_state)
+
+        log_event(logger, logging.INFO, "document_analysis_completed", document_id=job["document_id"], analysis_job_id=job["id"])
     except Exception as error:
-        retry_job = retry_document_analysis_job_from_db(
-            job["id"],
-            type(error).__name__,
-        )
+        exception_type = type(error).__name__
+        is_permanent_validation_error = isinstance(error, HTTPException)
+        sanitized_error = str(error.detail) if is_permanent_validation_error else exception_type
+        retry_job = retry_document_analysis_job_from_db(job["id"], sanitized_error, retryable=not is_permanent_validation_error)
         outcome = retry_job["status"] if retry_job else "missing"
-        log_event(
-            logger,
-            logging.ERROR,
-            "document_analysis_failed",
-            document_id=job["document_id"],
-            analysis_job_id=job["id"],
-            outcome=outcome,
-            exception_type=type(error).__name__,
-        )
+        log_event(logger, logging.ERROR, "document_analysis_failed", document_id=job["document_id"], analysis_job_id=job["id"], outcome=outcome, exception_type=exception_type)
 
 
 def run_document_worker() -> None:
@@ -61,8 +40,9 @@ def run_document_worker() -> None:
     if not api_key:
         raise RuntimeError("XAI_API_KEY is not configured")
 
-    initialize_database_from_db()
-    release_stale_document_analysis_jobs_from_db()
+    initialize_database()
+    release_stale_document_analysis_jobs()
+
     xai_client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
     set_xai_client(wrap_openai(xai_client, tracing_extra=langsmith_tracing_extra()))
     log_event(logger, logging.INFO, "document_worker_started", model=XAI_MODEL)

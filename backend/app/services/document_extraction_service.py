@@ -1,6 +1,9 @@
 import io
 import re
+from collections import Counter, defaultdict
 from dataclasses import dataclass
+from dataclasses import replace
+from statistics import median
 
 import pdfplumber
 from fastapi import HTTPException
@@ -78,32 +81,92 @@ def object_is_inside_table(object_data: dict, table_bounding_boxes: list[tuple[f
 
 def extract_narrative_without_tables(page, table_bounding_boxes: list[tuple[float, float, float, float]]) -> str:
     if not table_bounding_boxes:
-        return normalize_extracted_text(page.extract_text() or "")
+        extracted_text = page.extract_text() or ""
+        return normalize_extracted_text(extracted_text)
 
-    filtered_page = page.filter(
-        lambda object_data: not object_is_inside_table(object_data, table_bounding_boxes)
-    )
-    return normalize_extracted_text(filtered_page.extract_text() or "")
+    filtered_page = page.filter(lambda object_data: not object_is_inside_table(object_data, table_bounding_boxes))
+    extracted_text = filtered_page.extract_text() or ""
+    return normalize_extracted_text(extracted_text)
 
 
-def detect_heading_candidates(narrative_text: str) -> list[str]:
+def normalize_heading_for_comparison(heading: str) -> str:
+    return re.sub(r"\s+", " ", heading.casefold()).strip()
+
+
+def is_heading_line(line_text: str, line_words: list[dict], body_font_size: float) -> bool:
+    if not line_text or len(line_text) > 120:
+        return False
+
+    word_count = len(line_text.split())
+
+    if word_count > 14:
+        return False
+
+    excluded_patterns = (r"^page\s+\d+", r"^reference id:", r"^nda#?:", r"^\(?[a-z]\)?\s*\(\d+\)")
+
+    if any(re.match(pattern, line_text, re.IGNORECASE) for pattern in excluded_patterns):
+        return False
+
+    has_table_of_contents_leader = bool(re.search(r"[.…·]{3,}", line_text))
+
+    if has_table_of_contents_leader or line_text.endswith((".", ",", ";")):
+        return False
+
+    line_font_sizes = [float(word.get("size", body_font_size)) for word in line_words]
+    typical_line_font_size = median(line_font_sizes)
+    bold_word_count = sum("bold" in str(word.get("fontname", "")).casefold() for word in line_words)
+    uppercase_characters = sum(character.isupper() for character in line_text)
+    alphabetic_characters = sum(character.isalpha() for character in line_text)
+    uppercase_ratio = uppercase_characters / max(1, alphabetic_characters)
+    has_prominent_size = typical_line_font_size >= body_font_size + 1
+    is_mostly_bold = bold_word_count >= max(1, len(line_words) // 2)
+    is_short_uppercase = word_count <= 12 and uppercase_ratio >= 0.7
+    return has_prominent_size or is_mostly_bold or is_short_uppercase
+
+
+def detect_heading_candidates(page, table_bounding_boxes: list[tuple[float, float, float, float]]) -> list[str]:
+    words = page.extract_words(extra_attrs=["size", "fontname"])
+    narrative_words = [word for word in words if not object_is_inside_table(word, table_bounding_boxes)]
+
+    if not narrative_words:
+        return []
+
+    page_text = " ".join(str(word["text"]) for word in narrative_words).casefold()
+
+    if "representation of an electronic record that was signed" in page_text:
+        return []
+
+    font_sizes = [float(word.get("size", 0)) for word in narrative_words if word.get("size")]
+    body_font_size = median(font_sizes) if font_sizes else 0
+    words_by_line: defaultdict[int, list[dict]] = defaultdict(list)
+
+    for word in narrative_words:
+        line_key = round(float(word["top"]) / 2)
+        words_by_line[line_key].append(word)
+
     headings: list[str] = []
 
-    for raw_line in narrative_text.splitlines():
-        candidate = raw_line.strip()
+    for line_key in sorted(words_by_line):
+        line_words = sorted(words_by_line[line_key], key=lambda word: float(word["x0"]))
+        line_text = " ".join(str(word["text"]).strip() for word in line_words).strip()
 
-        if not candidate or len(candidate) > 120:
-            continue
-
-        word_count = len(candidate.split())
-        uppercase_ratio = sum(character.isupper() for character in candidate) / max(1, len(candidate))
-        resembles_numbered_heading = bool(re.match(r"^(\d+(\.\d+)*|[IVX]+)[.)]?\s+\S", candidate))
-        resembles_short_title = word_count <= 12 and uppercase_ratio >= 0.35
-
-        if resembles_numbered_heading or resembles_short_title:
-            headings.append(candidate)
+        if is_heading_line(line_text, line_words, body_font_size):
+            headings.append(line_text)
 
     return headings[:20]
+
+
+def remove_repeated_heading_candidates(pages: list[ExtractedDocumentPage]) -> list[ExtractedDocumentPage]:
+    normalized_headings = [normalize_heading_for_comparison(heading) for page in pages for heading in page.headings]
+    heading_frequency = Counter(normalized_headings)
+    cleaned_pages: list[ExtractedDocumentPage] = []
+
+    for page in pages:
+        unique_headings = [heading for heading in page.headings if heading_frequency[normalize_heading_for_comparison(heading)] < 3]
+        cleaned_page = replace(page, headings=unique_headings)
+        cleaned_pages.append(cleaned_page)
+
+    return cleaned_pages
 
 
 def extract_page_tables(page) -> tuple[list[ExtractedDocumentTable], list[tuple[float, float, float, float]]]:
@@ -117,56 +180,28 @@ def extract_page_tables(page) -> tuple[list[ExtractedDocumentTable], list[tuple[
             continue
 
         markdown = convert_pdf_table_to_markdown(normalized_rows)
-        extracted_table = ExtractedDocumentTable(
-            table_number=table_number,
-            rows=normalized_rows,
-            markdown=markdown,
-            token_count=estimate_tokens(markdown),
-        )
+        table_tokens = estimate_tokens(markdown)
+        extracted_table = ExtractedDocumentTable(table_number=table_number, rows=normalized_rows, markdown=markdown, token_count=table_tokens)
         extracted_tables.append(extracted_table)
         table_bounding_boxes.append(tuple(located_table.bbox))
 
     return extracted_tables, table_bounding_boxes
 
 
-def extract_structured_pdf(file_bytes: bytes) -> ExtractedPdfDocument:
-    if not file_bytes:
-        raise HTTPException(status_code=422, detail="The PDF file is empty")
+def extract_pdf_page(page, page_number: int) -> ExtractedDocumentPage:
+    tables, table_bounding_boxes = extract_page_tables(page)
+    narrative_text = extract_narrative_without_tables(page, table_bounding_boxes)
+    headings = detect_heading_candidates(page, table_bounding_boxes)
+    extraction_warnings = [] if narrative_text or tables else ["No extractable text or tables were found on this page"]
 
-    extracted_pages: list[ExtractedDocumentPage] = []
+    table_tokens = sum(table.token_count for table in tables)
+    narrative_tokens = estimate_tokens(narrative_text) if narrative_text else 0
 
-    try:
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            for page_number, page in enumerate(pdf.pages, start=1):
-                tables, table_bounding_boxes = extract_page_tables(page)
-                narrative_text = extract_narrative_without_tables(page, table_bounding_boxes)
-                headings = detect_heading_candidates(narrative_text)
-                warnings: list[str] = []
+    return ExtractedDocumentPage(page_number=page_number, narrative_text=narrative_text, tables=tables, headings=headings, token_count=narrative_tokens + table_tokens, extraction_warnings=extraction_warnings)
 
-                if not narrative_text and not tables:
-                    warnings.append("No extractable text or tables were found on this page")
 
-                table_tokens = sum(table.token_count for table in tables)
-                narrative_tokens = estimate_tokens(narrative_text) if narrative_text else 0
-                page_token_count = narrative_tokens + table_tokens
-                extracted_page = ExtractedDocumentPage(
-                    page_number=page_number,
-                    narrative_text=narrative_text,
-                    tables=tables,
-                    headings=headings,
-                    token_count=page_token_count,
-                    extraction_warnings=warnings,
-                )
-                extracted_pages.append(extracted_page)
-    except HTTPException:
-        raise
-    except Exception as error:
-        raise HTTPException(
-            status_code=422,
-            detail="Could not extract readable text or tables from this PDF",
-        ) from error
-
-    extracted_token_count = sum(page.token_count for page in extracted_pages)
+def validate_extracted_document(pages: list[ExtractedDocumentPage]) -> int:
+    extracted_token_count = sum(page.token_count for page in pages)
 
     if extracted_token_count == 0:
         raise HTTPException(status_code=422, detail="The PDF contains no extractable text or tables")
@@ -175,4 +210,21 @@ def extract_structured_pdf(file_bytes: bytes) -> ExtractedPdfDocument:
         detail = f"Extracted PDF content cannot exceed approximately {MAX_DOCUMENT_EXTRACTED_TOKENS} tokens"
         raise HTTPException(status_code=413, detail=detail)
 
-    return ExtractedPdfDocument(pages=extracted_pages, token_count=extracted_token_count)
+    return extracted_token_count
+
+
+def extract_structured_pdf(file_bytes: bytes) -> ExtractedPdfDocument:
+    if not file_bytes:
+        raise HTTPException(status_code=422, detail="The PDF file is empty")
+
+    try:
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            pages = [extract_pdf_page(page, page_number) for page_number, page in enumerate(pdf.pages, start=1)]
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=422, detail="Could not extract readable text or tables from this PDF") from error
+
+    pages = remove_repeated_heading_candidates(pages)
+    extracted_token_count = validate_extracted_document(pages)
+    return ExtractedPdfDocument(pages=pages, token_count=extracted_token_count)

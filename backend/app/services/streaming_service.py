@@ -12,12 +12,11 @@ from fastapi import HTTPException
 from ..core.clients import get_xai_client
 from ..core.config import MAX_FILE_CONTENT_SIZE, MAX_FILE_DESCRIPTION_TOKENS, MAX_PARALLEL_FILE_GENERATIONS, MAX_RESPONSE_TOKENS, XAI_MODEL
 from ..core.observability import CONTEXT_PREPARATION_DURATION, CONTEXT_SAFETY_FALLBACKS, MODEL_DURATION, MODEL_FIRST_TOKEN, MODEL_INCOMPLETE, MODEL_REQUESTS, REQUEST_TO_FIRST_TOKEN, STREAM_DELTAS, STREAM_OUTPUT_CHARACTERS, STREAMS, chatbot_trace, finish_chatbot_trace, get_chatbot_trace_id, hash_identifier, langgraph_config, log_event, observe_graph_execution, observe_operation, record_model_usage
-from ..infrastructure.database import count_messages_after_from_db, create_message_from_db, enqueue_summary_job_from_db, get_user_message_from_db, lock_conversation_from_db, update_user_message_and_delete_following_from_db
+from ..infrastructure.database import count_messages_after_from_db, insert_message_db, enqueue_summary_job_from_db, get_user_message_from_db, lock_conversation_in_db, update_user_message_and_delete_following_from_db
 from ..schemas.chat import ChatRequest, ContextBudgetError
 from .response_file_service import create_generated_response_file
 from ..utils.chat_context import create_initial_graph_state
 from ..workflows.graph import file_generation_graph, prepare_graph, safety_context_graph
-
 
 logger = logging.getLogger(__name__)
 FILE_GENERATION_EXECUTOR = ThreadPoolExecutor(max_workers=MAX_PARALLEL_FILE_GENERATIONS, thread_name_prefix="biology-file-generation")
@@ -118,7 +117,7 @@ def save_streamed_model_response(user_id: int, conversation_id: int, stream_stat
     STREAM_DELTAS.observe(len(stream_state["chunks"]))
     STREAM_OUTPUT_CHARACTERS.observe(len(reply))
     stream_state["stream_recorded"] = True
-    assistant_message = create_message_from_db(user_id, conversation_id, "assistant", reply)
+    assistant_message = insert_message_db(user_id, conversation_id, "assistant", reply)
 
     generated_file = create_generated_response_file(user_id, conversation_id, assistant_message["id"], request_message, file_content) if generate_file else None
     summary_job = enqueue_summary_job_from_db(conversation_id, assistant_message["id"], source_trace_id)
@@ -160,9 +159,9 @@ def stream_chat_events(request: ChatRequest) -> Iterator[str]:
     stream_state = create_stream_state()
     file_generation_future: Future[str] | None = None
     try:
-        with observe_operation("chat_stream"), lock_conversation_from_db(request.conversation_id):
+        with observe_operation("chat_stream"), lock_conversation_in_db(request.conversation_id):
             with chatbot_trace(request.user_id, request.conversation_id, "chat_stream", request.message) as trace_run:
-                user_message = create_message_from_db(request.user_id, request.conversation_id, "user", request.message)
+                user_message = insert_message_db(request.user_id, request.conversation_id, "user", request.message)
                 log_event(logger, logging.INFO, "message_saved", conversation_id=request.conversation_id, user_id_hash=hash_identifier(request.user_id), role="user")
                 prepared_context = prepare_stream_answer_context(request.user_id, request.conversation_id, "chat_stream", stream_state["request_started_at"], generate_file=request.generate_file)
                 stream_state["context_preparation_seconds"] = time.perf_counter() - stream_state["request_started_at"]
@@ -208,7 +207,7 @@ def stream_regenerated_message_events(message_id: int, user_id: int, content: st
     conversation_id = message["conversation_id"]
     stream_state = create_stream_state()
     try:
-        with observe_operation("regenerate_message_stream"), lock_conversation_from_db(conversation_id):
+        with observe_operation("regenerate_message_stream"), lock_conversation_in_db(conversation_id):
             messages_deleted = count_messages_after_from_db(conversation_id, message_id)
             trace_metadata = {"edited_message_id": message_id, "messages_deleted": messages_deleted}
             with chatbot_trace(user_id, conversation_id, "message_regeneration", content, trace_metadata) as trace_run:

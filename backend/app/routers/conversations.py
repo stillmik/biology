@@ -7,7 +7,6 @@ from ..infrastructure.database import create_conversation_from_db, delete_conver
 from ..schemas.chat import ConversationRequest, ConversationResponse, HistoryMessage
 from ..utils.chat_context import create_conversation_response
 
-
 router = APIRouter(prefix="/api", tags=["conversations"])
 logger = logging.getLogger(__name__)
 

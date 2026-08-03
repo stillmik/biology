@@ -12,7 +12,6 @@ from ...services.model_service import generate_model_response
 from ...utils.chat_context import estimate_context_tokens, estimate_message_tokens, estimate_tokens
 from .context import format_summary_segment, load_context_snapshot, select_messages_for_summary
 
-
 logger = logging.getLogger(__name__)
 
 

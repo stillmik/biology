@@ -14,12 +14,53 @@ const activeDocuments = document.querySelector("#active-documents");
 const sendButton = document.querySelector("#send-button");
 let activeConversation = null;
 let generateFile = false;
-let unresolvedAnswerJobId = null;
+const unresolvedAnswerJobsByConversation = new Map();
+const pendingConversationRequests = new Set();
 let activeDocumentRecords = [];
 document.querySelector("#username").textContent = user ? `@${user.username}` : "";
 
-fileInput.addEventListener("change", () => { const file = fileInput.files[0]; attachmentStatus.textContent = file ? `Attached: ${file.name}` : ""; });
-generateFileToggle.addEventListener("click", () => { generateFile = !generateFile; generateFileToggle.classList.toggle("is-active", generateFile); generateFileToggle.setAttribute("aria-pressed", String(generateFile)); generateFileToggle.title = generateFile ? "Generate a response file: on" : "Generate a PDF response file"; });
+function isPdfFile(file) {
+  return Boolean(file?.name.toLowerCase().endsWith(".pdf"));
+}
+
+function turnOffFileGeneration() {
+  generateFile = false;
+  generateFileToggle.classList.remove("is-active");
+  generateFileToggle.setAttribute("aria-pressed", "false");
+}
+
+function updateFileGenerationAvailability() {
+  const hasGroundedDocuments = activeDocumentRecords.length > 0 || isPdfFile(fileInput.files[0]);
+  generateFileToggle.disabled = hasGroundedDocuments;
+
+  if (hasGroundedDocuments) {
+    turnOffFileGeneration();
+    generateFileToggle.title = "Response files are unavailable for document-grounded answers";
+    return;
+  }
+
+  generateFileToggle.title = generateFile ? "Generate a response file: on" : "Generate a PDF response file";
+}
+
+function updateComposerAvailability() {
+  const activeConversationId = activeConversation?.id;
+  const activeConversationHasPendingAnswer = unresolvedAnswerJobsByConversation.has(activeConversationId);
+  const activeConversationHasPendingRequest = pendingConversationRequests.has(activeConversationId);
+  setComposerBusy(activeConversationHasPendingAnswer || activeConversationHasPendingRequest);
+}
+
+fileInput.addEventListener("change", () => {
+  const file = fileInput.files[0];
+  attachmentStatus.textContent = file ? `Attached: ${file.name}` : "";
+  updateFileGenerationAvailability();
+});
+generateFileToggle.addEventListener("click", () => {
+  if (generateFileToggle.disabled) return;
+  generateFile = !generateFile;
+  generateFileToggle.classList.toggle("is-active", generateFile);
+  generateFileToggle.setAttribute("aria-pressed", String(generateFile));
+  updateFileGenerationAvailability();
+});
 
 function addMessage(text, role) {
   const group = document.createElement("div");
@@ -143,8 +184,8 @@ function addStoredMessage(message) {
 }
 
 async function editStoredMessage(message, content) {
+  const editedConversation = activeConversation;
   const group = content.closest(".message-group");
-  const bubble = content.closest(".message");
   const actions = group.querySelector(".message-actions");
   const editor = document.createElement("div");
   editor.className = "message-editor";
@@ -156,10 +197,23 @@ async function editStoredMessage(message, content) {
   const cancel = document.createElement("button");
   cancel.className = "message-cancel";
   cancel.textContent = "Cancel";
+  let editFinished = false;
   const finish = async (shouldSave) => {
-    if (!shouldSave) return selectConversation(activeConversation);
+    if (editFinished) return;
+
+    if (!shouldSave) {
+      editFinished = true;
+
+      if (activeConversation?.id === editedConversation.id) {
+        await selectConversation(editedConversation);
+      }
+
+      return;
+    }
+
     const nextContent = editor.textContent.trim();
     if (!nextContent) return;
+    editFinished = true;
     const messageGroups = [...messages.querySelectorAll(".message-group")];
     const currentIndex = messageGroups.indexOf(group);
     messageGroups.slice(currentIndex + 1).forEach((messageGroup) => messageGroup.remove());
@@ -176,12 +230,29 @@ async function editStoredMessage(message, content) {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.detail || "Could not regenerate the message.");
       }
-      await readTokenStream(response, (token) => { reply += token; if (!assistantBubble) assistantBubble = addMessage("", "assistant"); renderAssistantText(assistantBubble, reply); messages.scrollTop = messages.scrollHeight; });
-      await selectConversation(activeConversation);
-      status.textContent = "";
+      const handleRegeneratedToken = (token) => {
+        reply += token;
+
+        if (activeConversation?.id !== editedConversation.id) return;
+
+        if (!assistantBubble) {
+          assistantBubble = addMessage("", "assistant");
+        }
+
+        renderAssistantText(assistantBubble, reply);
+        messages.scrollTop = messages.scrollHeight;
+      };
+      await readTokenStream(response, handleRegeneratedToken);
+
+      if (activeConversation?.id === editedConversation.id) {
+        await selectConversation(editedConversation);
+        status.textContent = "";
+      }
     } catch (error) {
-      await selectConversation(activeConversation);
-      status.textContent = error.message;
+      if (activeConversation?.id === editedConversation.id) {
+        await selectConversation(editedConversation);
+        status.textContent = error.message;
+      }
     }
   };
   save.addEventListener("click", () => finish(true));
@@ -342,6 +413,7 @@ function renderActiveDocuments() {
     chip.append(label, remove);
     activeDocuments.appendChild(chip);
   });
+  updateFileGenerationAvailability();
 }
 
 async function loadActiveDocuments() {
@@ -350,16 +422,21 @@ async function loadActiveDocuments() {
     renderActiveDocuments();
     return [];
   }
-  const response = await fetch(`/api/conversations/${activeConversation.id}/documents?user_id=${user.id}`);
+  const requestedConversationId = activeConversation.id;
+  const response = await fetch(`/api/conversations/${requestedConversationId}/documents?user_id=${user.id}`);
   if (!response.ok) throw new Error("Could not load attached PDFs.");
   const payload = await response.json();
+
+  if (activeConversation?.id !== requestedConversationId) {
+    return payload.documents;
+  }
+
   activeDocumentRecords = payload.documents;
   renderActiveDocuments();
   return activeDocumentRecords;
 }
 
 function setComposerBusy(isBusy) {
-  input.disabled = isBusy;
   sendButton.disabled = isBusy;
   fileInput.disabled = isBusy;
 }
@@ -368,26 +445,37 @@ function waitForNextPoll() {
   return new Promise((resolve) => window.setTimeout(resolve, 1200));
 }
 
-async function waitForAnswerJob(answerJobId) {
-  unresolvedAnswerJobId = answerJobId;
-  setComposerBusy(true);
-  while (unresolvedAnswerJobId === answerJobId) {
+async function waitForAnswerJob(answerJobId, answerConversationId) {
+  unresolvedAnswerJobsByConversation.set(answerConversationId, answerJobId);
+  updateComposerAvailability();
+
+  while (unresolvedAnswerJobsByConversation.get(answerConversationId) === answerJobId) {
     const response = await fetch(`/api/answer-jobs/${answerJobId}?user_id=${user.id}`);
     if (!response.ok) throw new Error("Could not check the document answer.");
     const answerJob = await response.json();
-    await loadActiveDocuments();
-    await loadDocumentLibrary();
-    const processingDocument = activeDocumentRecords.find((documentRecord) => documentRecord.status !== "ready");
-    status.textContent = processingDocument ? `Analyzing ${processingDocument.filename} · ${processingDocument.progress_percent}%` : "Preparing a grounded answer...";
+    const isViewingAnswerConversation = activeConversation?.id === answerConversationId;
+
+    if (isViewingAnswerConversation) {
+      await Promise.all([loadActiveDocuments(), loadDocumentLibrary()]);
+      const processingDocument = activeDocumentRecords.find((documentRecord) => documentRecord.status !== "ready");
+      status.textContent = processingDocument ? `Analyzing ${processingDocument.filename} · ${processingDocument.progress_percent}%` : "Preparing a grounded answer...";
+    }
+
     if (answerJob.status === "completed") {
-      unresolvedAnswerJobId = null;
-      await selectConversation(activeConversation);
+      unresolvedAnswerJobsByConversation.delete(answerConversationId);
+
+      if (isViewingAnswerConversation) {
+        await selectConversation(activeConversation);
+      }
+
       return;
     }
+
     if (["failed", "cancelled"].includes(answerJob.status)) {
-      unresolvedAnswerJobId = null;
+      unresolvedAnswerJobsByConversation.delete(answerConversationId);
       throw new Error(answerJob.last_error || "The document answer could not be completed.");
     }
+
     await waitForNextPoll();
   }
 }
@@ -416,16 +504,27 @@ async function createConversation() {
 
 async function selectConversation(conversation) {
   activeConversation = conversation;
+  updateComposerAvailability();
   localStorage.setItem("biology_active_conversation", conversation.id);
   document.querySelector("#chat-title").textContent = conversation.title;
   const response = await fetch(`/api/conversations/${conversation.id}/messages?user_id=${user.id}`);
   if (!response.ok) throw new Error("Could not load conversation history.");
   const history = await response.json();
+
+  if (activeConversation?.id !== conversation.id) {
+    return;
+  }
+
   messages.replaceChildren();
   if (!history.length) addMessage("Ask anything — this chat will keep its own history ✨", "assistant");
   history.forEach(addStoredMessage);
   await loadActiveDocuments();
   await loadDocumentLibrary();
+
+  if (activeConversation?.id !== conversation.id) {
+    return;
+  }
+
   const conversations = await fetch(`/api/users/${user.id}/conversations`).then((result) => result.json());
   renderConversations(conversations);
 }
@@ -455,6 +554,21 @@ async function readTokenStream(response, onToken, onFile = () => {}, onAnswerJob
   }
 }
 
+function createChatRequestOptions(attachedFile, message, conversationId, shouldGenerateFile) {
+  if (!attachedFile) {
+    const requestBody = { user_id: user.id, conversation_id: conversationId, message, generate_file: shouldGenerateFile };
+    return { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestBody) };
+  }
+
+  const formData = new FormData();
+  formData.append("user_id", user.id);
+  formData.append("conversation_id", conversationId);
+  formData.append("message", message);
+  formData.append("file", attachedFile);
+  formData.append("generate_file", String(shouldGenerateFile));
+  return { method: "POST", body: formData };
+}
+
 document.querySelector("#new-chat").addEventListener("click", () => createConversation().catch((error) => { status.textContent = error.message; }));
 document.querySelector("#refresh-documents").addEventListener("click", () => Promise.all([loadDocumentLibrary(), loadActiveDocuments()]).catch((error) => { status.textContent = error.message; }));
 
@@ -462,19 +576,28 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const message = input.value.trim();
   if (!message || !activeConversation) return;
+  const activeConversationId = activeConversation.id;
+  const hasUnresolvedAnswer = unresolvedAnswerJobsByConversation.has(activeConversationId);
+  const hasPendingRequest = pendingConversationRequests.has(activeConversationId);
+
+  if (hasUnresolvedAnswer || hasPendingRequest) return;
+
   const attachedFile = fileInput.files[0];
   const shouldGenerateFile = generateFile;
   addMessage(attachedFile ? `${message}\n\n📎 ${attachedFile.name}` : message, "user");
   input.value = "";
   fileInput.value = "";
   attachmentStatus.textContent = "";
-  generateFile = false;
-  generateFileToggle.classList.remove("is-active");
-  generateFileToggle.setAttribute("aria-pressed", "false");
-  generateFileToggle.title = "Generate a PDF response file";
+  turnOffFileGeneration();
+  updateFileGenerationAvailability();
   status.textContent = "Thinking...";
+  const submittedConversationId = activeConversation.id;
+  let queuedAnswerJob = null;
+  pendingConversationRequests.add(submittedConversationId);
+  updateComposerAvailability();
+
   try {
-    const requestOptions = attachedFile ? { method: "POST", body: (() => { const data = new FormData(); data.append("user_id", user.id); data.append("conversation_id", activeConversation.id); data.append("message", message); data.append("file", attachedFile); data.append("generate_file", String(shouldGenerateFile)); return data; })() } : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: user.id, conversation_id: activeConversation.id, message, generate_file: shouldGenerateFile }) };
+    const requestOptions = createChatRequestOptions(attachedFile, message, submittedConversationId, shouldGenerateFile);
     const response = await fetch(attachedFile ? "/api/chat/stream-with-file" : "/api/chat/stream", requestOptions);
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
@@ -482,22 +605,58 @@ form.addEventListener("submit", async (event) => {
     }
     let assistantBubble = null;
     let reply = "";
-    let queuedAnswerJob = null;
-    await readTokenStream(
-      response,
-      (token) => { reply += token; if (!assistantBubble) assistantBubble = addMessage("", "assistant"); renderAssistantText(assistantBubble, reply); messages.scrollTop = messages.scrollHeight; },
-      (generatedFile) => { if (!assistantBubble) assistantBubble = addMessage("", "assistant"); addGeneratedFileLink(assistantBubble.closest(".message-group"), generatedFile); },
-      (answerJob) => { queuedAnswerJob = answerJob; },
-      () => { status.textContent = "PDF saved. Starting analysis..."; },
-    );
-    if (queuedAnswerJob) await waitForAnswerJob(queuedAnswerJob.id);
-    else await selectConversation(activeConversation);
+    const handleStreamedToken = (token) => {
+      reply += token;
+
+      if (activeConversation?.id !== submittedConversationId) return;
+
+      if (!assistantBubble) {
+        assistantBubble = addMessage("", "assistant");
+      }
+
+      renderAssistantText(assistantBubble, reply);
+      messages.scrollTop = messages.scrollHeight;
+    };
+    const handleGeneratedFile = (generatedFile) => {
+      if (activeConversation?.id !== submittedConversationId) return;
+
+      if (!assistantBubble) {
+        assistantBubble = addMessage("", "assistant");
+      }
+
+      const assistantMessageGroup = assistantBubble.closest(".message-group");
+      addGeneratedFileLink(assistantMessageGroup, generatedFile);
+    };
+    const handleAnswerJob = (answerJob) => {
+      queuedAnswerJob = answerJob;
+    };
+    const handleUploadedDocument = () => {
+      if (activeConversation?.id === submittedConversationId) {
+        status.textContent = "PDF saved. Starting analysis...";
+      }
+    };
+    await readTokenStream(response, handleStreamedToken, handleGeneratedFile, handleAnswerJob, handleUploadedDocument);
+    if (queuedAnswerJob) {
+      await waitForAnswerJob(queuedAnswerJob.id, submittedConversationId);
+    } else if (activeConversation?.id === submittedConversationId) {
+      await selectConversation(activeConversation);
+    }
   } catch (error) {
-    addMessage(error.message, "assistant");
+    if (unresolvedAnswerJobsByConversation.get(submittedConversationId) === queuedAnswerJob?.id) {
+      unresolvedAnswerJobsByConversation.delete(submittedConversationId);
+    }
+
+    if (activeConversation?.id === submittedConversationId) {
+      addMessage(error.message, "assistant");
+    }
   } finally {
-    unresolvedAnswerJobId = null;
-    setComposerBusy(false);
-    status.textContent = "";
+    pendingConversationRequests.delete(submittedConversationId);
+    updateComposerAvailability();
+
+    if (activeConversation?.id === submittedConversationId) {
+      status.textContent = "";
+    }
+
     input.focus();
   }
 });
